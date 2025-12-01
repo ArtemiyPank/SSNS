@@ -1,0 +1,61 @@
+cmake_minimum_required(VERSION 3.20)
+project(SSNS LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
+add_compile_options(-Wall -Wextra -Wpedantic)
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    add_compile_options(-O2 -march=native -fno-omit-frame-pointer)
+elseif(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    add_compile_options(-O0 -g -fsanitize=address,undefined)
+    add_link_options(-fsanitize=address,undefined)
+endif()
+
+# OpenBLAS via runtime linkage; prototypes vendored in third_party/cblas_minimal.h.
+# find_library only matches lib<name>.so on Linux, so fall back to scanning for
+# the SONAME-versioned file when a -devel package (which provides the bare .so
+# symlink) is not installed.
+find_library(OPENBLAS_LIB
+    NAMES openblaso openblas blas
+    PATHS /lib64 /usr/lib64 /usr/lib /usr/lib/x86_64-linux-gnu)
+
+if(NOT OPENBLAS_LIB)
+    foreach(_candidate /lib64/libopenblaso.so.0
+                       /lib64/libopenblas.so.0
+                       /usr/lib64/libopenblaso.so.0
+                       /usr/lib64/libopenblas.so.0
+                       /usr/lib/x86_64-linux-gnu/libopenblas.so.0)
+        if(EXISTS "${_candidate}")
+            set(OPENBLAS_LIB "${_candidate}" CACHE FILEPATH "" FORCE)
+            break()
+        endif()
+    endforeach()
+endif()
+
+if(NOT OPENBLAS_LIB)
+    message(FATAL_ERROR "libopenblas/libblas not found on system. "
+                        "Install the runtime package (e.g. dnf install openblas-openmp).")
+endif()
+message(STATUS "Using BLAS: ${OPENBLAS_LIB}")
+
+include_directories(${CMAKE_SOURCE_DIR}/third_party
+                    ${CMAKE_SOURCE_DIR}/include)
+
+enable_testing()
+
+# Single test runner aggregating every tests/test_*.cpp.  Catch2 v2 single-
+# header style: one TU defines CATCH_CONFIG_MAIN; the others #include catch.hpp
+# without the macro.  We keep that TU at tests/test_main.cpp.
+file(GLOB SSNS_TEST_SOURCES tests/test_*.cpp)
+add_executable(ssns_tests ${SSNS_TEST_SOURCES})
+if(OPENBLAS_LIB)
+    target_link_libraries(ssns_tests PRIVATE ${OPENBLAS_LIB})
+endif()
+
+add_test(NAME ssns_tests COMMAND ssns_tests)

@@ -1,0 +1,33 @@
+# Build outputs
+build/
+build-*/
+cmake-build-*/
+
+# Compiler / object files
+*.o
+*.obj
+*.a
+*.so
+*.so.*
+*.dll
+*.dylib
+*.exe
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+
+# CMake bric-a-brac
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+Makefile
+compile_commands.json
+
+# Local data
+ui_data/
+*.log
