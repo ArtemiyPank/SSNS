@@ -49,12 +49,28 @@ include_directories(${CMAKE_SOURCE_DIR}/third_party
 
 enable_testing()
 
+# Core library — implementations live in src/<group>/*.cpp; tests and the
+# eventual binaries link against this static archive.
+file(GLOB_RECURSE SSNS_CORE_SOURCES src/*.cpp)
+if(SSNS_CORE_SOURCES)
+    add_library(ssns_core STATIC ${SSNS_CORE_SOURCES})
+    target_include_directories(ssns_core PUBLIC
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party)
+    if(OPENBLAS_LIB)
+        target_link_libraries(ssns_core PUBLIC ${OPENBLAS_LIB})
+    endif()
+endif()
+
 # Single test runner aggregating every tests/test_*.cpp.  Catch2 v2 single-
 # header style: one TU defines CATCH_CONFIG_MAIN; the others #include catch.hpp
 # without the macro.  We keep that TU at tests/test_main.cpp.
 file(GLOB SSNS_TEST_SOURCES tests/test_*.cpp)
 add_executable(ssns_tests ${SSNS_TEST_SOURCES})
-if(OPENBLAS_LIB)
+if(SSNS_CORE_SOURCES)
+    target_link_libraries(ssns_tests PRIVATE ssns_core)
+endif()
+if(OPENBLAS_LIB AND NOT SSNS_CORE_SOURCES)
     target_link_libraries(ssns_tests PRIVATE ${OPENBLAS_LIB})
 endif()
 
