@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SSNS-Clean Visual IDE</title>
+<link rel="stylesheet" href="/ui/css/styles.css">
+</head>
+<body>
+
+<header class="topbar">
+    <h1>SSNS-Clean Visual IDE</h1>
+    <span class="topbar-meta mono" id="arch-meta">no log loaded</span>
+    <span id="status-pill" class="pill pill-idle">Idle</span>
+</header>
+
+<!-- =================================================================== -->
+<!-- 1. Configuration row.                                               -->
+<!-- =================================================================== -->
+<section class="config-section">
+    <form id="config-form" class="config-grid">
+
+        <div class="param">
+            <label for="T_input">T_input</label>
+            <input type="range" id="T_input" name="T_input" min="16" max="256" step="16" value="64">
+            <output for="T_input" class="param-value mono">64</output>
+        </div>
+
+        <div class="param">
+            <label for="T_hidden">T_hidden</label>
+            <input type="range" id="T_hidden" name="T_hidden" min="16" max="512" step="16" value="64">
+            <output for="T_hidden" class="param-value mono">64</output>
+        </div>
+
+        <div class="param">
+            <label for="S_hidden">S_hidden</label>
+            <input type="range" id="S_hidden" name="S_hidden" min="64" max="1024" step="64" value="192">
+            <output for="S_hidden" class="param-value mono">192</output>
+        </div>
+
+        <div class="param">
+            <label for="output_clusters">output_clusters</label>
+            <input type="range" id="output_clusters" name="output_clusters" min="8" max="512" step="8" value="256">
+            <output for="output_clusters" class="param-value mono">256</output>
+        </div>
+
+        <div class="param">
+            <label for="cluster_size">cluster_size</label>
+            <input type="range" id="cluster_size" name="cluster_size" min="1" max="15" step="1" value="5">
+            <output for="cluster_size" class="param-value mono">5</output>
+        </div>
+
+        <div class="param param-derived">
+            <label>output_dim</label>
+            <output id="output_dim_display" class="param-value mono">1280</output>
+            <span class="hint">clusters × cluster_size</span>
+        </div>
+
+        <div class="param">
+            <label for="batch_size">batch_size</label>
+            <input type="range" id="batch_size" name="batch_size" min="8" max="256" step="8" value="64">
+            <output for="batch_size" class="param-value mono">64</output>
+        </div>
+
+        <div class="param">
+            <label for="epochs">epochs</label>
+            <input type="range" id="epochs" name="epochs" min="100" max="30000" step="100" value="10000">
+            <output for="epochs" class="param-value mono">10000</output>
+        </div>
+
+        <div class="param">
+            <label for="dz">dz (dead zone)</label>
+            <input type="range" id="dz" name="dz" min="0.01" max="0.49" step="0.01" value="0.03">
+            <output for="dz" class="param-value mono">0.03</output>
+        </div>
+
+        <div class="param">
+            <label for="lr_max">lr_max</label>
+            <input type="range" id="lr_max" name="lr_max" min="0.0001" max="0.05" step="0.0001" value="0.01">
+            <output for="lr_max" class="param-value mono">0.0100</output>
+        </div>
+
+        <div class="param">
+            <label for="warmup_frac">warmup_frac</label>
+            <input type="range" id="warmup_frac" name="warmup_frac" min="0" max="0.3" step="0.01" value="0.05">
+            <output for="warmup_frac" class="param-value mono">0.05</output>
+        </div>
+
+        <div class="config-section-break">
+            <span>Encryption</span>
+        </div>
+
+        <label class="param param-checkbox">
+            <input type="checkbox" id="use_fhe" name="use_fhe">
+            <span>
+                Use CKKS FHE on the wire
+                <span class="hint">~20-50× slower; encrypts H, Y_pred client→server and grad_W2, error_hidden server→client every epoch</span>
+            </span>
+        </label>
+
+        <div class="config-section-break">
+            <span>Logging</span>
+        </div>
+
+        <div class="param">
+            <label for="samples_to_log">samples per snapshot
+                <span class="hint">≤ batch_size</span></label>
+            <input type="range" id="samples_to_log" name="samples_to_log" min="1" max="64" step="1" value="16">
+            <output for="samples_to_log" class="param-value mono">16</output>
+        </div>
+
+        <div class="param">
+            <label for="snapshot_count">snapshots
+                <span class="hint">frames over full run</span></label>
+            <input type="range" id="snapshot_count" name="snapshot_count" min="2" max="200" step="1" value="10">
+            <output for="snapshot_count" class="param-value mono">10</output>
+        </div>
+
+        <div class="param param-action">
+            <button type="submit" id="run-btn" class="primary">Run Training</button>
+            <span id="run-status" class="run-status mono"></span>
+        </div>
+
+    </form>
+</section>
+
+<!-- =================================================================== -->
+<!-- 2. Visualization controls.                                          -->
+<!-- =================================================================== -->
+<section class="viz-controls">
+    <label class="ctrl">
+        <span class="ctrl-label">Batch Item Index</span>
+        <select id="batch-select"></select>
+    </label>
+
+    <label class="ctrl ctrl-checkbox">
+        <input type="checkbox" id="show-weights">
+        <span>Show Weight Matrices</span>
+    </label>
+
+    <label class="ctrl ctrl-stretch">
+        <span class="ctrl-label">Epoch <span id="epoch-display" class="mono">—</span></span>
+        <input type="range" id="epoch-slider" min="0" max="0" step="1" value="0" disabled>
+    </label>
+</section>
+
+<!-- =================================================================== -->
+<!-- 3. Main visualizer — Teacher | Student.                             -->
+<!-- =================================================================== -->
+<main class="networks">
+
+    <section class="network teacher">
+        <h2>Teacher Network <span class="subtle">(reference, frozen)</span></h2>
+
+        <!-- Top-down: Input X -> W1_T -> Hidden H_T -> W2_T -> Y_true -->
+        <div class="layer-block">
+            <div class="layer-label">Input X <span class="dim mono" id="dim-x-t">—</span><span class="subtle">shared with Student</span></div>
+            <canvas id="hm-x-t" class="heatmap vector" width="900" height="60"></canvas>
+        </div>
+
+        <div class="layer-block weight-block">
+            <div class="layer-label">W1_T <span class="dim mono" id="dim-w1t">—</span></div>
+            <canvas id="hm-w1t" class="heatmap weights" width="900" height="200"></canvas>
+        </div>
+
+        <div class="layer-block">
+            <div class="layer-label">Hidden H_T <span class="dim mono" id="dim-ht">—</span><span class="subtle">ReLU(X @ W1_T)</span></div>
+            <canvas id="hm-ht" class="heatmap vector" width="900" height="60"></canvas>
+        </div>
+
+        <div class="layer-block weight-block">
+            <div class="layer-label">W2_T <span class="dim mono" id="dim-w2t">—</span></div>
+            <canvas id="hm-w2t" class="heatmap weights" width="900" height="200"></canvas>
+        </div>
+
+        <div class="layer-block">
+            <div class="layer-label">Output Y_true <span class="dim mono" id="dim-yt">—</span><span class="subtle">sigmoid, grouped into clusters</span></div>
+            <canvas id="hm-yt" class="heatmap output" width="900" height="240"></canvas>
+        </div>
+    </section>
+
+    <section class="network student">
+        <h2>Student Network <span class="subtle">(trainable)</span></h2>
+
+        <div class="layer-block">
+            <div class="layer-label">Input X <span class="dim mono" id="dim-x-s">—</span><span class="subtle">shared with Teacher</span></div>
+            <canvas id="hm-x-s" class="heatmap vector" width="900" height="60"></canvas>
+        </div>
+
+        <div class="layer-block weight-block">
+            <div class="layer-label">W1 <span class="dim mono" id="dim-w1s">—</span></div>
+            <canvas id="hm-w1s" class="heatmap weights" width="900" height="200"></canvas>
+        </div>
+
+        <div class="layer-block">
+            <div class="layer-label">Hidden H <span class="dim mono" id="dim-hs">—</span><span class="subtle">ReLU(X @ W1)</span></div>
+            <canvas id="hm-hs" class="heatmap vector" width="900" height="60"></canvas>
+        </div>
+
+        <div class="layer-block weight-block">
+            <div class="layer-label">W2 <span class="dim mono" id="dim-w2s">—</span></div>
+            <canvas id="hm-w2s" class="heatmap weights" width="900" height="200"></canvas>
+        </div>
+
+        <div class="layer-block">
+            <div class="layer-label">Output Y_pred <span class="dim mono" id="dim-ys">—</span><span class="subtle">sigmoid, grouped into clusters</span></div>
+            <canvas id="hm-ys" class="heatmap output" width="900" height="240"></canvas>
+        </div>
+    </section>
+
+</main>
+
+<!-- =================================================================== -->
+<!-- 4. Analytics & manual input.                                        -->
+<!-- =================================================================== -->
+<section class="analytics">
+
+    <div class="analytics-block analytics-loss">
+        <h2>Loss Curve</h2>
+        <canvas id="loss-chart" width="540" height="240"></canvas>
+        <div class="loss-readout mono">
+            <span>min: <span id="loss-min">—</span></span>
+            <span>last: <span id="loss-last">—</span></span>
+        </div>
+    </div>
+
+    <div class="analytics-block analytics-stress">
+        <h2>Stress Test (post-sync statistics)</h2>
+        <p class="subtle stress-help">
+            Run N random N(0, 1) inputs through the trained Teacher and
+            Student. Aggregates confident-bit counts, shared bits and
+            mismatches over all trials.
+        </p>
+        <form id="stress-form" class="stress-form">
+            <label class="stress-input">
+                <span class="stress-input-label">Trials</span>
+                <input type="number" id="stress-n" value="200" min="1" max="10000">
+            </label>
+            <label class="stress-input">
+                <span class="stress-input-label">Seed</span>
+                <input type="number" id="stress-seed" value="42">
+            </label>
+            <button type="submit" id="stress-run" class="primary">Run Stress Test</button>
+            <span id="stress-status" class="stress-status mono"></span>
+        </form>
+        <div id="stress-result" class="stress-result"></div>
+        <canvas id="stress-histogram" width="540" height="180" hidden></canvas>
+        <div id="stress-hist-caption" class="stress-hist-caption" hidden>
+            Distribution of shared confident bits across trials
+        </div>
+    </div>
+
+    <div class="analytics-block analytics-manual">
+        <h2>Manual Input</h2>
+
+        <!-- 3-column horizontal layout:
+                  [ form + status + summary ]  [ Teacher Y_T ]  [ Student Y_S ]
+             Bit strings (T/S) span the full width as a row UNDER the heatmaps. -->
+        <div class="manual-grid">
+
+            <div class="manual-col-form">
+                <form id="manual-form" class="manual-form">
+                    <label>X (comma- or whitespace-separated)
+                        <textarea id="manual-x" rows="3" placeholder="0.1, -0.3, 0.5, ..."></textarea>
+                    </label>
+                    <div class="manual-actions">
+                        <button type="button" id="manual-fill" class="secondary">Fill N(0,1)</button>
+                        <button type="submit" class="primary">Run</button>
+                    </div>
+                    <div class="manual-status-row">
+                        <span id="manual-status" class="manual-status mono"></span>
+                        <span id="manual-summary" class="manual-summary mono"></span>
+                    </div>
+                </form>
+            </div>
+
+            <div id="manual-heatmaps" class="manual-heatmaps" hidden>
+                <div class="manual-side manual-side-yt">
+                    <div class="layer-label">Teacher Y_T
+                        <span class="subtle">cluster grid</span></div>
+                    <canvas id="manual-hm-yt" class="heatmap output"
+                            width="540" height="280"></canvas>
+                </div>
+                <div class="manual-side manual-side-ys">
+                    <div class="layer-label">Student Y_S
+                        <span class="subtle">cluster grid</span></div>
+                    <canvas id="manual-hm-ys" class="heatmap output"
+                            width="540" height="280"></canvas>
+                </div>
+                <div class="manual-legend mono">
+                    <span class="legend-swatch swatch-bit1"></span> bit 1
+                    <span class="legend-swatch swatch-bit0"></span> bit 0
+                    <span class="legend-swatch swatch-dead"></span> dead zone
+                    <span class="subtle">hover for value / mean / bit</span>
+                </div>
+            </div>
+
+            <!-- Bit strings — full-width row below everything. -->
+            <div id="manual-result" class="manual-result"></div>
+
+        </div>
+    </div>
+
+</section>
+
+<div id="tooltip" class="tooltip"></div>
+
+<script type="module" src="/ui/js/app.js"></script>
+</body>
+</html>
