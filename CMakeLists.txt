@@ -50,8 +50,10 @@ include_directories(${CMAKE_SOURCE_DIR}/third_party
 enable_testing()
 
 # Core library — implementations live in src/<group>/*.cpp; tests and the
-# eventual binaries link against this static archive.
-file(GLOB_RECURSE SSNS_CORE_SOURCES src/*.cpp)
+# CLI / server binaries link against this static archive.  Top-level entry
+# points (src/benchmark.cpp, src/server_main.cpp) are excluded — they are
+# wired as standalone executables below.
+file(GLOB_RECURSE SSNS_CORE_SOURCES src/*/*.cpp)
 if(SSNS_CORE_SOURCES)
     add_library(ssns_core STATIC ${SSNS_CORE_SOURCES})
     target_include_directories(ssns_core PUBLIC
@@ -59,6 +61,14 @@ if(SSNS_CORE_SOURCES)
         ${CMAKE_SOURCE_DIR}/third_party)
     if(OPENBLAS_LIB)
         target_link_libraries(ssns_core PUBLIC ${OPENBLAS_LIB})
+    endif()
+endif()
+
+# CLI subprocess target — same role as scripts/benchmark_fhe_vs_plain.py.
+if(EXISTS ${CMAKE_SOURCE_DIR}/src/benchmark.cpp)
+    add_executable(ssns-benchmark src/benchmark.cpp)
+    if(SSNS_CORE_SOURCES)
+        target_link_libraries(ssns-benchmark PRIVATE ssns_core)
     endif()
 endif()
 
@@ -75,3 +85,9 @@ if(OPENBLAS_LIB AND NOT SSNS_CORE_SOURCES)
 endif()
 
 add_test(NAME ssns_tests COMMAND ssns_tests)
+
+# Tell tests/test_benchmark.cpp where the CLI binary lives.
+if(TARGET ssns-benchmark)
+    set_property(TEST ssns_tests APPEND PROPERTY ENVIRONMENT
+        "SSNS_BENCHMARK_BINARY=$<TARGET_FILE:ssns-benchmark>")
+endif()
