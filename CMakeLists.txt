@@ -62,6 +62,9 @@ if(SSNS_CORE_SOURCES)
     if(OPENBLAS_LIB)
         target_link_libraries(ssns_core PUBLIC ${OPENBLAS_LIB})
     endif()
+    # cpp-httplib (used by src/http/server.cpp) needs pthread on POSIX.
+    find_package(Threads REQUIRED)
+    target_link_libraries(ssns_core PUBLIC Threads::Threads)
 endif()
 
 # CLI subprocess target — same role as scripts/benchmark_fhe_vs_plain.py.
@@ -70,6 +73,17 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/src/benchmark.cpp)
     if(SSNS_CORE_SOURCES)
         target_link_libraries(ssns-benchmark PRIVATE ssns_core)
     endif()
+endif()
+
+# HTTP server binary — mirrors `uvicorn app:app` from the Python reference.
+if(EXISTS ${CMAKE_SOURCE_DIR}/src/server_main.cpp)
+    add_executable(ssns-server src/server_main.cpp)
+    if(SSNS_CORE_SOURCES)
+        target_link_libraries(ssns-server PRIVATE ssns_core)
+    endif()
+    # cpp-httplib needs pthread on POSIX.
+    find_package(Threads REQUIRED)
+    target_link_libraries(ssns-server PRIVATE Threads::Threads)
 endif()
 
 # Single test runner aggregating every tests/test_*.cpp.  Catch2 v2 single-
