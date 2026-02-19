@@ -205,9 +205,14 @@ bool parse_training_params(const json& body, TrainingParams& out, std::string& e
 }
 
 // Build argv list mirroring _PARAM_TO_CLI in app.py.  First entry is the
-// benchmark binary path itself (becomes argv[0]).
+// benchmark binary path itself (becomes argv[0]).  --output-path and
+// --status-path are forwarded so the subprocess writes to the SAME files
+// the server reads — otherwise the subprocess defaults to ui_data/...
+// relative to its CWD and progress / log are invisible to the API.
 std::vector<std::string> build_cmd_argv(const fs::path& benchmark,
-                                        const TrainingParams& p) {
+                                        const TrainingParams& p,
+                                        const fs::path& output_path,
+                                        const fs::path& status_path) {
     std::vector<std::string> a;
     a.push_back(benchmark.string());
     auto push = [&](const char* flag, const std::string& v) {
@@ -235,6 +240,9 @@ std::vector<std::string> build_cmd_argv(const fs::path& benchmark,
     long snap_count = std::max<long>(1L, p.snapshot_count);
     long snap_interval = std::max<long>(1L, p.epochs / snap_count);
     push("--snapshot-interval", std::to_string(snap_interval));
+
+    push("--output-path", output_path.string());
+    push("--status-path", status_path.string());
 
     a.emplace_back("--skip-fhe-bench");
     if (p.use_fhe) a.emplace_back("--use-fhe");
@@ -539,7 +547,9 @@ void handle_post_run_training(const ServerConfig& cfg,
         send_error(res, 422, err);
         return;
     }
-    auto argv = build_cmd_argv(cfg.benchmark_binary, p);
+    auto argv = build_cmd_argv(cfg.benchmark_binary, p,
+                               cfg.training_data_path,
+                               cfg.training_status_path);
 
     // Best-effort placeholder.  app.py wraps in try/except OSError.
     try {
