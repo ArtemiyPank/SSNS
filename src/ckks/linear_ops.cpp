@@ -2,8 +2,13 @@
 // op set and preconditions.
 #include <ssns/ckks/linear_ops.hpp>
 
+#include <ssns/ckks/modarith.hpp>
 #include <ssns/ckks/ntt_ops.hpp>
+#include <ssns/ckks/params.hpp>
+#include <ssns/ckks/poly.hpp>
 
+#include <cmath>
+#include <cstdint>
 #include <stdexcept>
 #include <string>
 
@@ -76,6 +81,53 @@ Ciphertext sub_plain(const Ciphertext& ct, const Plaintext& pt) {
     out.c1 = ct.c1;
     out.scale = ct.scale;
     out.level = ct.level;
+    return out;
+}
+
+namespace {
+
+// Bump factor used by mul_scalar — see header "Scale arithmetic".  We pick
+// 2^60 (a power of two) because:
+//   * |scalar| ≤ 1 → |k| ≤ 2^60, well within int64 range with one bit to spare;
+//   * 2^60 is close enough to the 60-bit prime COEFF_MODULI[NUM_PRIMES-1]
+//     that a single rescale brings the scale back to ≈ 2^40.
+constexpr int MUL_SCALAR_BUMP_BITS = 60;
+
+// Reduce a signed 64-bit integer mod p.
+std::uint64_t signed_mod(std::int64_t k, std::uint64_t p) noexcept {
+    if (k >= 0) {
+        return static_cast<std::uint64_t>(k) % p;
+    }
+    // k < 0: compute |k| mod p, then negate in the field.
+    const std::uint64_t mag = static_cast<std::uint64_t>(-(k + 1)) + 1ULL;  // |k|, even when k = INT64_MIN
+    const std::uint64_t r = mag % p;
+    return r == 0 ? 0 : p - r;
+}
+
+}  // namespace
+
+Ciphertext mul_scalar(const Ciphertext& ct, double scalar) {
+    // Encode scalar as a 60-bit signed integer k = round(scalar * 2^60).
+    // |scalar| ≤ 1 keeps |k| ≤ 2^60, fitting comfortably in int64_t.
+    const double bump = std::ldexp(1.0, MUL_SCALAR_BUMP_BITS);  // 2^60
+    const double k_real = std::round(scalar * bump);
+    const std::int64_t k = static_cast<std::int64_t>(k_real);
+
+    Ciphertext out;
+    out.scale = ct.scale * bump;
+    out.level = ct.level;
+    for (std::size_t i = 0; i < NUM_PRIMES; ++i) {
+        const std::uint64_t q = COEFF_MODULI[i];
+        const std::uint64_t k_i = signed_mod(k, q);
+        const auto& c0_i = ct.c0.residues[i];
+        const auto& c1_i = ct.c1.residues[i];
+        auto& out0 = out.c0.residues[i];
+        auto& out1 = out.c1.residues[i];
+        for (std::size_t j = 0; j < POLY_DEGREE; ++j) {
+            out0[j] = mul_mod(c0_i[j], k_i, q);
+            out1[j] = mul_mod(c1_i[j], k_i, q);
+        }
+    }
     return out;
 }
 
