@@ -39,7 +39,11 @@
 #pragma once
 
 #include <ssns/ckks/ciphertext.hpp>
+#include <ssns/ckks/ntt.hpp>
+#include <ssns/ckks/params.hpp>
 #include <ssns/ckks/plaintext.hpp>
+
+#include <array>
 
 namespace ssns::ckks {
 
@@ -53,5 +57,29 @@ Ciphertext sub_plain(const Ciphertext& ct, const Plaintext& pt);
 // of `scalar`).  The result must be `rescale`-d before being added to a
 // ciphertext that hasn't been bumped.
 Ciphertext mul_scalar(const Ciphertext& ct, double scalar);
+
+// Drop the highest-indexed active prime from the modulus chain.  This is
+// the CKKS "rescale" / "mod-down" operation: it brings the scale back from
+// e.g. 2^100 down to ~2^40 after a `mul_scalar` (or, in later phases, a
+// cipher×cipher multiplication).
+//
+// Concretely, with q_drop = COEFF_MODULI[ct.level - 1]:
+//
+//     out.c0[i][j] = (ct.c0[i][j] - lift(ct.c0[L-1][j])) * inv(q_drop, q_i)   (mod q_i)
+//                                                                  for i < L-1
+//     out.c1 analogously
+//     out.scale = ct.scale / q_drop
+//     out.level = ct.level - 1
+//
+// where lift(.) centers the residue mod q_drop into a signed integer.  All
+// of this is done by inverse-NTT-ing into coefficient form, applying the
+// per-prime correction, then re-NTT-ing the surviving residues — the dropped
+// residue slot is zeroed for hygiene but downstream ops should not read it
+// anyway.
+//
+// Throws std::invalid_argument if ct.level < 2 (cannot rescale to zero
+// active primes).
+Ciphertext rescale(const Ciphertext& ct,
+                   const std::array<NTT, NUM_PRIMES>& ntts);
 
 }  // namespace ssns::ckks

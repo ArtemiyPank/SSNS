@@ -47,7 +47,16 @@ public:
     // Decode a polynomial back into a slot vector of length POLY_DEGREE/2.
     // Lifts each RNS coefficient to a signed integer (centered around 0)
     // using Garner-style CRT, divides by scale, applies the special FFT.
-    std::vector<std::complex<double>> decode(const Polynomial& p, double scale) const;
+    //
+    // `level` controls how many RNS primes participate in the CRT lift.
+    // Defaults to NUM_PRIMES so callers using fresh ciphertexts / plaintexts
+    // see the existing API.  After `rescale` (Phase 6.4) the active level
+    // shrinks; pass the smaller `level` so the dropped residues — which are
+    // zeroed out by rescale — don't perturb the lift.  Must satisfy
+    // `1 <= level <= NUM_PRIMES`.
+    std::vector<std::complex<double>> decode(const Polynomial& p,
+                                             double scale,
+                                             std::size_t level = NUM_PRIMES) const;
 
     static constexpr std::size_t slot_count() { return POLY_DEGREE / 2; }
 

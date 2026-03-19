@@ -144,24 +144,31 @@ Polynomial Encoder::encode(const std::vector<std::complex<double>>& z, double sc
     return out;
 }
 
-std::vector<std::complex<double>> Encoder::decode(const Polynomial& p, double scale) const {
+std::vector<std::complex<double>> Encoder::decode(const Polynomial& p,
+                                                  double scale,
+                                                  std::size_t level) const {
     constexpr std::size_t N = POLY_DEGREE;
     constexpr std::size_t H = N / 2;
     if (!(scale > 0.0)) {
         throw std::invalid_argument("Encoder::decode: scale must be positive");
     }
+    if (level == 0 || level > NUM_PRIMES) {
+        throw std::invalid_argument("Encoder::decode: level must be in [1, NUM_PRIMES]");
+    }
 
     const double inv_scale = 1.0 / scale;
 
-    // Lift each coefficient via Garner CRT, center mod Q, divide by scale.
+    // Lift each coefficient via Garner CRT, center mod Q_level, divide by
+    // scale.  Only the first `level` residues participate — anything above
+    // (e.g. zeroed residues from a rescaled ciphertext) is ignored.
     std::vector<std::complex<double>> z_full(N);
     for (std::size_t j = 0; j < N; ++j) {
-        std::array<std::uint64_t, NUM_PRIMES> r;
-        for (std::size_t i = 0; i < NUM_PRIMES; ++i) {
+        std::array<std::uint64_t, NUM_PRIMES> r{};
+        for (std::size_t i = 0; i < level; ++i) {
             r[i] = p.residues[i][j];
         }
-        const U256 lifted = crt_lift(r);
-        const double centered = crt_center_to_double(lifted);
+        const U256 lifted = crt_lift(r, level);
+        const double centered = crt_center_to_double(lifted, level);
         const double m_real = centered * inv_scale;
         // Twist: m̃_j = m_j · ζ^j (input is real, so imaginary part is zero).
         z_full[j] = std::complex<double>(m_real, 0.0) * zeta_pow_[j];

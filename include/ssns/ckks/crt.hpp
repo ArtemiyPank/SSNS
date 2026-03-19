@@ -49,8 +49,19 @@ double u256_to_double(const U256& a);
 // Lift a tuple of RNS residues r[i] = x mod q_i into x ∈ [0, Q).
 U256 crt_lift(const std::array<std::uint64_t, NUM_PRIMES>& r);
 
+// Level-aware CRT lift: only the first `level` primes participate.  The
+// reconstructed value lives in [0, Q_level) where Q_level = Π_{i<level} q_i.
+// Residues at indices ≥ level are ignored.  `level` must satisfy
+// `1 <= level <= NUM_PRIMES`.
+U256 crt_lift(const std::array<std::uint64_t, NUM_PRIMES>& r, std::size_t level);
+
 // Center a lifted U256 around 0 (mod Q) and return as signed double.
 // If x > Q/2 the value represents the negative integer x − Q.
 double crt_center_to_double(const U256& x);
+
+// Level-aware centering: x lives in [0, Q_level) where Q_level is the
+// product of the first `level` primes.  If x > Q_level/2 the value
+// represents x - Q_level.
+double crt_center_to_double(const U256& x, std::size_t level);
 
 }  // namespace ssns::ckks

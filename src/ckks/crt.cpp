@@ -84,41 +84,43 @@ double u256_to_double(const U256& a) {
 
 namespace {
 
-// Garner CRT setup: precomputes Π q_i and the inverses needed for the
-// mixed-radix lift.
+// Garner CRT setup: precomputes Π_{i<L} q_i for every level L ∈ [1..NUM_PRIMES]
+// and the inverses needed for the mixed-radix lift.  We store one entry per
+// level so the level-aware lift can pick the right Q (and the right Q/2 for
+// centering) at zero runtime cost.
 struct GarnerCtx {
-    U256 Q;                                                      // product
-    U256 Q_half;                                                 // Q/2 — center boundary
-    std::array<U256, NUM_PRIMES> partial;                        // Π_{j<i} q_j
+    // partial[i] = Π_{j<i} q_j.  partial[NUM_PRIMES] = full Q.
+    std::array<U256, NUM_PRIMES + 1> partial;
+    // Q_at_level[L] = Π_{i<L} q_i (= partial[L]); Q_half_at_level[L] = ⌊Q/2⌋.
+    std::array<U256, NUM_PRIMES + 1> Q_half_at_level;
     std::array<std::uint64_t, NUM_PRIMES * NUM_PRIMES> inv_table;
     // inv_table[i * NUM_PRIMES + j] = (q_j)^-1 mod q_i, used by Garner
     // when reducing the running sum.
 };
 
+void rshift1(U256& x) {
+    const std::uint64_t hi_lsb = x.hi & 1ULL;
+    const std::uint64_t mhi_lsb = x.mid_hi & 1ULL;
+    const std::uint64_t mlo_lsb = x.mid_lo & 1ULL;
+    x.hi     = x.hi >> 1;
+    x.mid_hi = (x.mid_hi >> 1) | (hi_lsb << 63);
+    x.mid_lo = (x.mid_lo >> 1) | (mhi_lsb << 63);
+    x.lo     = (x.lo >> 1) | (mlo_lsb << 63);
+}
+
 GarnerCtx make_garner_ctx() {
     GarnerCtx ctx;
     ctx.partial[0] = U256{1, 0, 0, 0};
-    for (std::size_t i = 1; i < NUM_PRIMES; ++i) {
-        ctx.partial[i] = ctx.partial[i - 1];
-        u256_mul_u64(ctx.partial[i], COEFF_MODULI[i - 1]);
+    for (std::size_t i = 0; i < NUM_PRIMES; ++i) {
+        ctx.partial[i + 1] = ctx.partial[i];
+        u256_mul_u64(ctx.partial[i + 1], COEFF_MODULI[i]);
     }
-    ctx.Q = ctx.partial[NUM_PRIMES - 1];
-    u256_mul_u64(ctx.Q, COEFF_MODULI[NUM_PRIMES - 1]);
-    ctx.Q_half = ctx.Q;
-    // Q / 2: shift right by 1.  All CKKS primes are odd → Q is odd, integer
-    // division floors.
-    {
-        std::uint64_t hi_lsb = ctx.Q_half.hi & 1ULL;
-        std::uint64_t newhi = (ctx.Q_half.hi >> 1);
-        std::uint64_t new_mid_hi = (ctx.Q_half.mid_hi >> 1) | (hi_lsb << 63);
-        std::uint64_t mhi_lsb = ctx.Q_half.mid_hi & 1ULL;
-        std::uint64_t new_mid_lo = (ctx.Q_half.mid_lo >> 1) | (mhi_lsb << 63);
-        std::uint64_t mlo_lsb = ctx.Q_half.mid_lo & 1ULL;
-        std::uint64_t new_lo = (ctx.Q_half.lo >> 1) | (mlo_lsb << 63);
-        ctx.Q_half.hi = newhi;
-        ctx.Q_half.mid_hi = new_mid_hi;
-        ctx.Q_half.mid_lo = new_mid_lo;
-        ctx.Q_half.lo = new_lo;
+    // Q_half at every level (Q_at_level[0] is degenerate but we never query
+    // level 0; treat the entry as zero for safety).
+    ctx.Q_half_at_level[0] = U256{0, 0, 0, 0};
+    for (std::size_t L = 1; L <= NUM_PRIMES; ++L) {
+        ctx.Q_half_at_level[L] = ctx.partial[L];
+        rshift1(ctx.Q_half_at_level[L]);
     }
     for (std::size_t i = 0; i < NUM_PRIMES; ++i) {
         for (std::size_t j = 0; j < i; ++j) {
@@ -136,11 +138,11 @@ const GarnerCtx& garner_ctx() {
 
 }  // namespace
 
-U256 crt_lift(const std::array<std::uint64_t, NUM_PRIMES>& r) {
+U256 crt_lift(const std::array<std::uint64_t, NUM_PRIMES>& r, std::size_t level) {
     const auto& ctx = garner_ctx();
     std::array<std::uint64_t, NUM_PRIMES> c{};
     c[0] = r[0] % COEFF_MODULI[0];
-    for (std::size_t i = 1; i < NUM_PRIMES; ++i) {
+    for (std::size_t i = 1; i < level; ++i) {
         std::uint64_t partial = 0;
         std::uint64_t prod_mod_qi = 1;
         for (std::size_t j = 0; j < i; ++j) {
@@ -158,7 +160,7 @@ U256 crt_lift(const std::array<std::uint64_t, NUM_PRIMES>& r) {
         c[i] = mul_mod(diff, inv_prod, COEFF_MODULI[i]);
     }
     U256 x{0, 0, 0, 0};
-    for (std::size_t i = 0; i < NUM_PRIMES; ++i) {
+    for (std::size_t i = 0; i < level; ++i) {
         U256 term = ctx.partial[i];
         u256_mul_u64(term, c[i]);
         u256_add(x, term);
@@ -166,15 +168,25 @@ U256 crt_lift(const std::array<std::uint64_t, NUM_PRIMES>& r) {
     return x;
 }
 
-double crt_center_to_double(const U256& x) {
+U256 crt_lift(const std::array<std::uint64_t, NUM_PRIMES>& r) {
+    return crt_lift(r, NUM_PRIMES);
+}
+
+double crt_center_to_double(const U256& x, std::size_t level) {
     const auto& ctx = garner_ctx();
-    if (u256_lt(ctx.Q_half, x)) {
+    const U256& Q_half = ctx.Q_half_at_level[level];
+    const U256& Q = ctx.partial[level];
+    if (u256_lt(Q_half, x)) {
         // x > Q/2 → negative branch.  Return (x − Q) as double.
-        U256 negated = ctx.Q;
+        U256 negated = Q;
         u256_sub(negated, x);
         return -u256_to_double(negated);
     }
     return u256_to_double(x);
+}
+
+double crt_center_to_double(const U256& x) {
+    return crt_center_to_double(x, NUM_PRIMES);
 }
 
 }  // namespace ssns::ckks
