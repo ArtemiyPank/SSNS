@@ -58,6 +58,24 @@ Ciphertext sub_plain(const Ciphertext& ct, const Plaintext& pt);
 // ciphertext that hasn't been bumped.
 Ciphertext mul_scalar(const Ciphertext& ct, double scalar);
 
+// ---------------------------------------------------------------------------
+// Depth-1 multiplications (Phase 6.5)
+// ---------------------------------------------------------------------------
+//
+// mul_plain(ct, pt) — cipher × plaintext.  Both operands stored in NTT form,
+// so the operation is pointwise multiplication on each (c0, c1) component.
+// Result carries the bumped scale and the lower of the two levels:
+//
+//     out.c0    = pointwise_mul_ntt(ct.c0, pt.poly)
+//     out.c1    = pointwise_mul_ntt(ct.c1, pt.poly)
+//     out.scale = ct.scale * pt.scale
+//     out.level = min(ct.level, pt.level)
+//
+// Precondition: ct.level == pt.level — the active modulus chains must agree.
+// Mismatch throws std::invalid_argument.  Scale is NOT required to match
+// (this op is multiplicative — bumping is the whole point).
+Ciphertext mul_plain(const Ciphertext& ct, const Plaintext& pt);
+
 // Drop the highest-indexed active prime from the modulus chain.  This is
 // the CKKS "rescale" / "mod-down" operation: it brings the scale back from
 // e.g. 2^100 down to ~2^40 after a `mul_scalar` (or, in later phases, a

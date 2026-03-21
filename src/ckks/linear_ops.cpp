@@ -170,6 +170,20 @@ Ciphertext mul_scalar(const Ciphertext& ct, double scalar) {
     return out;
 }
 
+Ciphertext mul_plain(const Ciphertext& ct, const Plaintext& pt) {
+    if (ct.level != pt.level) {
+        throw std::invalid_argument(
+            std::string("ckks::mul_plain: level mismatch (") +
+            std::to_string(ct.level) + " vs " + std::to_string(pt.level) + ")");
+    }
+    Ciphertext out;
+    out.c0 = pointwise_mul_ntt(ct.c0, pt.poly);
+    out.c1 = pointwise_mul_ntt(ct.c1, pt.poly);
+    out.scale = ct.scale * pt.scale;
+    out.level = ct.level;  // == pt.level
+    return out;
+}
+
 Ciphertext rescale(const Ciphertext& ct,
                    const std::array<NTT, NUM_PRIMES>& ntts) {
     if (ct.level < 2) {
