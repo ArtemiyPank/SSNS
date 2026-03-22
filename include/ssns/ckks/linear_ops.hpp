@@ -39,6 +39,7 @@
 #pragma once
 
 #include <ssns/ckks/ciphertext.hpp>
+#include <ssns/ckks/eval_key.hpp>
 #include <ssns/ckks/ntt.hpp>
 #include <ssns/ckks/params.hpp>
 #include <ssns/ckks/plaintext.hpp>
@@ -75,6 +76,38 @@ Ciphertext mul_scalar(const Ciphertext& ct, double scalar);
 // Mismatch throws std::invalid_argument.  Scale is NOT required to match
 // (this op is multiplicative — bumping is the whole point).
 Ciphertext mul_plain(const Ciphertext& ct, const Plaintext& pt);
+
+// mul_cipher(a, b, evk) — cipher × cipher with BV-style relinearisation.
+//
+// Tensor expansion (in NTT form):
+//     d0 = a.c0 * b.c0
+//     d1 = a.c0 * b.c1 + a.c1 * b.c0
+//     d2 = a.c1 * b.c1
+//
+// Relinearisation back to a degree-1 ciphertext via the EvalKey identity
+// b_evk + a_evk·s ≈ s² (mod q):
+//     out.c0 = d0 + d2 * evk.b
+//     out.c1 = d1 + d2 * evk.a
+//     out.scale = a.scale * b.scale
+//     out.level = a.level
+//
+// Preconditions:
+//   * a.scale ≈ b.scale (within ~1e-6 relative — scales come from a
+//     deterministic chain, so exact equality is the common case)
+//   * a.level == b.level
+//   * a.level >= 1
+// Mismatch throws std::invalid_argument.
+//
+// The EvalKey is generated at full level NUM_PRIMES; ops at level L < NUM_PRIMES
+// only read the first L RNS slots, which is fine because all four were filled
+// at keygen.
+//
+// The result is at the SAME level as the inputs (mul_cipher does not drop a
+// level by itself).  Call `rescale` to bring the bumped scale back down and
+// drop one prime.
+Ciphertext mul_cipher(const Ciphertext& a,
+                      const Ciphertext& b,
+                      const EvalKey& evk);
 
 // Drop the highest-indexed active prime from the modulus chain.  This is
 // the CKKS "rescale" / "mod-down" operation: it brings the scale back from

@@ -170,6 +170,48 @@ Ciphertext mul_scalar(const Ciphertext& ct, double scalar) {
     return out;
 }
 
+Ciphertext mul_cipher(const Ciphertext& a,
+                      const Ciphertext& b,
+                      const EvalKey& evk) {
+    // Scale check — tolerate a tiny relative drift (post-rescale scales are
+    // not powers of two, but they ARE deterministic, so any pair produced by
+    // the same chain agrees to within machine epsilon).
+    const double scale_diff = std::abs(a.scale - b.scale);
+    if (scale_diff > 1e-6 * std::max(a.scale, 1.0)) {
+        throw std::invalid_argument(
+            std::string("ckks::mul_cipher: scale mismatch (") +
+            std::to_string(a.scale) + " vs " + std::to_string(b.scale) + ")");
+    }
+    if (a.level != b.level) {
+        throw std::invalid_argument(
+            std::string("ckks::mul_cipher: level mismatch (") +
+            std::to_string(a.level) + " vs " + std::to_string(b.level) + ")");
+    }
+    if (a.level < 1) {
+        throw std::invalid_argument(
+            "ckks::mul_cipher: level must be >= 1");
+    }
+
+    // Tensor expansion — all in NTT (frequency-domain) form.
+    Polynomial d0 = pointwise_mul_ntt(a.c0, b.c0);
+    Polynomial d1a = pointwise_mul_ntt(a.c0, b.c1);
+    Polynomial d1b = pointwise_mul_ntt(a.c1, b.c0);
+    Polynomial d1 = pointwise_add(d1a, d1b);
+    Polynomial d2 = pointwise_mul_ntt(a.c1, b.c1);
+
+    // Relinearisation: fold the s² term using evk = (b, a) where
+    // b_evk + a_evk·s ≈ s².
+    Polynomial d2_b = pointwise_mul_ntt(d2, evk.b);
+    Polynomial d2_a = pointwise_mul_ntt(d2, evk.a);
+
+    Ciphertext out;
+    out.c0 = pointwise_add(d0, d2_b);
+    out.c1 = pointwise_add(d1, d2_a);
+    out.scale = a.scale * b.scale;
+    out.level = a.level;
+    return out;
+}
+
 Ciphertext mul_plain(const Ciphertext& ct, const Plaintext& pt) {
     if (ct.level != pt.level) {
         throw std::invalid_argument(
