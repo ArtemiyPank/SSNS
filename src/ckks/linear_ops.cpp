@@ -172,7 +172,8 @@ Ciphertext mul_scalar(const Ciphertext& ct, double scalar) {
 
 Ciphertext mul_cipher(const Ciphertext& a,
                       const Ciphertext& b,
-                      const EvalKey& evk) {
+                      const EvalKey& evk,
+                      const std::array<NTT, NUM_PRIMES>& ntts) {
     // Scale check — tolerate a tiny relative drift (post-rescale scales are
     // not powers of two, but they ARE deterministic, so any pair produced by
     // the same chain agrees to within machine epsilon).
@@ -199,14 +200,61 @@ Ciphertext mul_cipher(const Ciphertext& a,
     Polynomial d1 = pointwise_add(d1a, d1b);
     Polynomial d2 = pointwise_mul_ntt(a.c1, b.c1);
 
-    // Relinearisation: fold the s² term using evk = (b, a) where
-    // b_evk + a_evk·s ≈ s².
-    Polynomial d2_b = pointwise_mul_ntt(d2, evk.b);
-    Polynomial d2_a = pointwise_mul_ntt(d2, evk.a);
+    // ----- RNS-gadget relinearisation -----------------------------------
+    // The naive BV-style relin (single (b_evk, a_evk)) leaves a noise term
+    // d2 · e_evk mod Q with magnitude ~Q/2 — swamps the message.
+    // The RNS-gadget version decomposes d2 across the prime chain so each
+    // sub-key contributes a noise term bounded by ||d2_at_i||·N·σ ≈ q_i·N·σ
+    // instead of Q·N·σ, recovering the message.  See eval_key.hpp.
+    //
+    // Step 1: bring d2 to coefficient form (so we can lift its slot-i
+    //         residue to a centred integer per coefficient).
+    Polynomial d2_coeff = d2;
+    for (std::size_t i = 0; i < NUM_PRIMES; ++i) {
+        ntts[i].inverse(d2_coeff.residues[i].data());
+    }
+
+    Polynomial c0_relin = d0;
+    Polynomial c1_relin = d1;
+
+    // Step 2: per gadget index i, build d2_at_i — the polynomial whose
+    //         coefficient k equals d2_coeff.residues[i][k] lifted to a
+    //         centred integer in (-q_i/2, q_i/2], then reduced mod each q_j.
+    //         Forward-NTT and accumulate d2_at_i · sub_keys[i].b into c0_relin
+    //         and d2_at_i · sub_keys[i].a into c1_relin.
+    for (std::size_t i = 0; i < NUM_PRIMES; ++i) {
+        const std::uint64_t q_i = COEFF_MODULI[i];
+        const std::uint64_t half_qi = q_i >> 1;
+
+        Polynomial d2_at_i;  // RNS poly to be built across all NUM_PRIMES slots.
+        const auto& src = d2_coeff.residues[i];
+        for (std::size_t k = 0; k < POLY_DEGREE; ++k) {
+            const std::uint64_t r = src[k];
+            const bool negative = (r > half_qi);
+            const std::uint64_t mag = negative ? (q_i - r) : r;
+            for (std::size_t j = 0; j < NUM_PRIMES; ++j) {
+                const std::uint64_t q_j = COEFF_MODULI[j];
+                const std::uint64_t mag_j = mag % q_j;
+                d2_at_i.residues[j][k] = negative
+                    ? (mag_j == 0 ? 0 : q_j - mag_j)
+                    : mag_j;
+            }
+        }
+        // Forward-NTT each slot of d2_at_i.
+        for (std::size_t j = 0; j < NUM_PRIMES; ++j) {
+            ntts[j].forward(d2_at_i.residues[j].data());
+        }
+
+        // Accumulate.
+        Polynomial term0 = pointwise_mul_ntt(d2_at_i, evk.sub_keys[i].b);
+        Polynomial term1 = pointwise_mul_ntt(d2_at_i, evk.sub_keys[i].a);
+        c0_relin.add_inplace(term0);
+        c1_relin.add_inplace(term1);
+    }
 
     Ciphertext out;
-    out.c0 = pointwise_add(d0, d2_b);
-    out.c1 = pointwise_add(d1, d2_a);
+    out.c0 = std::move(c0_relin);
+    out.c1 = std::move(c1_relin);
     out.scale = a.scale * b.scale;
     out.level = a.level;
     return out;

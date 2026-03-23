@@ -77,19 +77,27 @@ Ciphertext mul_scalar(const Ciphertext& ct, double scalar);
 // (this op is multiplicative — bumping is the whole point).
 Ciphertext mul_plain(const Ciphertext& ct, const Plaintext& pt);
 
-// mul_cipher(a, b, evk) — cipher × cipher with BV-style relinearisation.
+// mul_cipher(a, b, evk, ntts) — cipher × cipher with RNS-gadget relinearisation.
 //
 // Tensor expansion (in NTT form):
 //     d0 = a.c0 * b.c0
 //     d1 = a.c0 * b.c1 + a.c1 * b.c0
 //     d2 = a.c1 * b.c1
 //
-// Relinearisation back to a degree-1 ciphertext via the EvalKey identity
-// b_evk + a_evk·s ≈ s² (mod q):
-//     out.c0 = d0 + d2 * evk.b
-//     out.c1 = d1 + d2 * evk.a
+// Relinearisation back to a degree-1 ciphertext via the RNS-gadget evaluation
+// key (see eval_key.hpp).  At a high level:
+//     for i in 0..NUM_PRIMES:
+//         d2_at_i = lift d2's slot-i residue to a centred integer per
+//                   coefficient, reduce mod each q_j, forward-NTT.
+//         c0_relin += d2_at_i * sub_keys[i].b
+//         c1_relin += d2_at_i * sub_keys[i].a
+//     c0_relin += d0 ; c1_relin += d1
+//
 //     out.scale = a.scale * b.scale
 //     out.level = a.level
+//
+// The `ntts` array is needed for the inverse-NTT-on-d2 (to lift the slot-i
+// residue) and the forward-NTT on d2_at_i.
 //
 // Preconditions:
 //   * a.scale ≈ b.scale (within ~1e-6 relative — scales come from a
@@ -107,7 +115,8 @@ Ciphertext mul_plain(const Ciphertext& ct, const Plaintext& pt);
 // drop one prime.
 Ciphertext mul_cipher(const Ciphertext& a,
                       const Ciphertext& b,
-                      const EvalKey& evk);
+                      const EvalKey& evk,
+                      const std::array<NTT, NUM_PRIMES>& ntts);
 
 // Drop the highest-indexed active prime from the modulus chain.  This is
 // the CKKS "rescale" / "mod-down" operation: it brings the scale back from
