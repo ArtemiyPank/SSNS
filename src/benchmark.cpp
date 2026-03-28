@@ -7,9 +7,11 @@
 #include <cstring>
 #include <filesystem>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 #include <string>
 
+#include <ssns/ckks/backend.hpp>
 #include <ssns/io/logger.hpp>
 #include <ssns/io/status_file.hpp>
 #include <ssns/linalg/matrix.hpp>
@@ -105,10 +107,6 @@ Args parse_args(int argc, char** argv) {
     if (a.snapshot_interval <= 0) {
         a.snapshot_interval = std::max<long>(1, a.epochs / 10);
     }
-    if (a.use_fhe) {
-        // Phase 7 will hook this up; until then refuse loudly.
-        die("--use-fhe is not implemented in this phase");
-    }
     return a;
 }
 
@@ -162,6 +160,13 @@ int main(int argc, char** argv) try {
 
     nn::Rng rng(a.seed + 1);
 
+    // FHE backend is constructed only when --use-fhe is set.  Key generation
+    // is fast (~ms); the cost is in the per-step ciphertext arithmetic.
+    std::optional<ckks::Backend> fhe_backend;
+    if (a.use_fhe) {
+        fhe_backend = ckks::Backend::create(a.seed);
+    }
+
     const auto started_at = std::chrono::system_clock::now();
     io::write_starting_status(a.status_path, a.epochs);
 
@@ -170,8 +175,11 @@ int main(int argc, char** argv) try {
     double last_lr   = 0.0;
 
     for (long ep = 1; ep <= a.epochs; ++ep) {
-        auto step = protocol::clean_train_step(client, server,
-                                               a.batch_size, a.s_input, rng);
+        auto step = a.use_fhe
+            ? protocol::clean_train_step_fhe(client, server, *fhe_backend,
+                                              a.batch_size, a.s_input, rng)
+            : protocol::clean_train_step(client, server,
+                                          a.batch_size, a.s_input, rng);
         const double lr_now = nn::warmup_cosine_lr(
             client.step_count() - 1,
             a.epochs,
