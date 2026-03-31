@@ -6,6 +6,7 @@ const ENDPOINT = {
     trainingData:   "/api/training_data",
     trainingStatus: "/api/training_status",
     runTraining:    "/api/run_training",
+    stopTraining:   "/api/stop_training",
     manualTest:     "/api/manual_test",
     stressTest:     "/api/stress_test",
 };
@@ -47,6 +48,22 @@ export async function postRunTraining(params) {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(params),
+    });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) {
+        const detail = body && body.detail
+            ? (typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail))
+            : `HTTP ${r.status}`;
+        throw new Error(detail);
+    }
+    return body;
+}
+
+export async function postStopTraining(pid) {
+    const r = await fetch(ENDPOINT.stopTraining, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ pid }),
     });
     const body = await r.json().catch(() => ({}));
     if (!r.ok) {

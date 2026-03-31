@@ -10,7 +10,7 @@
  */
 import {
     getTrainingData, getTrainingStatus,
-    postRunTraining, postManualTest, postStressTest,
+    postRunTraining, postStopTraining, postManualTest, postStressTest,
 } from "/ui/js/api.js";
 import { sigmoidArr } from "/ui/js/extract.js";
 import { MatrixHeatmap, ClusterStripHeatmap, VectorHeatmap } from "/ui/js/heatmap.js";
@@ -83,6 +83,8 @@ const els = {
     statusPill:   $("status-pill"),
     archMeta:     $("arch-meta"),
     runBtn:       $("run-btn"),
+    stopBtn:      $("stop-btn"),
+    runProgress:  $("run-progress"),
     runStatus:    $("run-status"),
     configForm:   $("config-form"),
     epochSlider:  $("epoch-slider"),
@@ -231,6 +233,7 @@ function syncDerivedValues() {
 
 function bindControls() {
     els.configForm.addEventListener("submit", onRun);
+    els.stopBtn.addEventListener("click", onStop);
     els.epochSlider.addEventListener("input", onEpochChange);
     els.batchSelect.addEventListener("change", onBatchChange);
     els.showWeights.addEventListener("change", onShowWeightsChange);
@@ -277,6 +280,8 @@ async function onRun(e) {
     setStatus("Processing", "processing");
     els.runStatus.classList.remove("error", "ok");
     els.runStatus.textContent = "Submitting training request...";
+    els.runProgress.hidden = true;
+    els.runProgress.textContent = "";
     // Reset per-run guards so completion detection is not contaminated
     // by the *previous* run's status file (running:false stays on disk
     // between runs).
@@ -285,17 +290,42 @@ async function onRun(e) {
     state.runEpochs       = params.epochs;
     state.runSubmittedAt  = Date.now();   // ms epoch — used by status tick
                                           // to spot completed_at > submit
+    state.runPid          = null;
 
     try {
         const resp = await postRunTraining(params);
+        state.runPid = resp.pid;
         els.runStatus.textContent =
             `Training subprocess started (pid=${resp.pid}). Polling for snapshots...`;
+        // Reveal Stop button + progress line.
+        els.stopBtn.hidden    = false;
+        els.stopBtn.disabled  = false;
+        els.runProgress.hidden = false;
+        els.runProgress.textContent = `epoch 0/${params.epochs} — starting…`;
         startPolling(params);
         startStatusPolling(params);
     } catch (err) {
         flagError(els.runStatus, `Run failed: ${err.message}`);
         setStatus("Error", "error");
         els.runBtn.disabled = false;
+    }
+}
+
+// Stop button handler — POST /api/stop_training with the stored pid.
+async function onStop() {
+    if (!state.runPid) return;
+    els.stopBtn.disabled = true;
+    els.runStatus.classList.remove("error", "ok");
+    els.runStatus.textContent = `Stopping pid=${state.runPid}...`;
+    try {
+        await postStopTraining(state.runPid);
+        // Don't tear down polling here — the status poll will pick up the
+        // running:false marker the server just wrote and finalise the UI
+        // through the existing completion path.
+        els.runStatus.textContent = `Stop signal sent (pid=${state.runPid}). Waiting for confirmation...`;
+    } catch (err) {
+        flagError(els.runStatus, `Stop failed: ${err.message}`);
+        els.stopBtn.disabled = false;
     }
 }
 
@@ -381,6 +411,10 @@ function startStatusPolling(_params) {
     const giveUp = (reason) => {
         stopAllPolling();
         els.runBtn.disabled = false;
+        els.stopBtn.hidden = true;
+        els.stopBtn.disabled = false;
+        els.runProgress.hidden = true;
+        state.runPid = null;
         setStatus("Stalled", "error");
         els.runStatus.classList.remove("ok");
         els.runStatus.classList.add("error");
@@ -406,6 +440,22 @@ function startStatusPolling(_params) {
             consecutive404 = 0;
             if (s.running) state.seenRunning = true;
 
+            // Live progress while training: epoch counter + loss + elapsed.
+            // The eta_sec field is best-effort; only render it when present.
+            if (s.running) {
+                const eta = (s.eta_sec != null && Number.isFinite(s.eta_sec))
+                    ? `, ETA ${s.eta_sec.toFixed(0)}s`
+                    : "";
+                const lossStr = (typeof s.loss === "number" && s.loss > 0)
+                    ? `, loss=${s.loss.toExponential(2)}`
+                    : "";
+                els.runProgress.hidden = false;
+                els.runProgress.textContent =
+                    `epoch ${s.epoch}/${s.total_epochs}` +
+                    lossStr +
+                    `, elapsed ${s.elapsed_sec.toFixed(1)}s${eta}`;
+            }
+
             // Treat completed_at > runSubmittedAt as definitive proof that
             // OUR run finished — even if we never observed running:true
             // (e.g. the tab was background-throttled through the entire
@@ -415,22 +465,30 @@ function startStatusPolling(_params) {
                 Date.parse(s.completed_at) >= state.runSubmittedAt - 1000;
 
             if (!s.running && (state.seenRunning || completedAfterSubmit)) {
-                // Training has finished. Refresh snapshot data once, then
-                // wind everything down.
+                // Training has finished (either naturally or via Stop).
+                // Refresh snapshot data once, then wind everything down.
                 stopAllPolling();
                 try {
                     const data = await getTrainingData();
                     if (data) { state.data = data; initialiseUIFromData(); }
                 } catch (e) { /* ignore — UI is already best-effort */ }
                 els.runBtn.disabled = false;
+                els.stopBtn.hidden = true;
+                els.stopBtn.disabled = false;
+                els.runProgress.hidden = true;
+                state.runPid = null;
                 setStatus("Ready", "ready");
                 els.runStatus.classList.remove("error");
                 els.runStatus.classList.add("ok");
+                const stoppedTag = s.stopped ? " (stopped by user)" : "";
                 els.runStatus.textContent =
-                    `Training complete: epoch ${s.epoch}/${s.total_epochs} ` +
+                    `Training complete${stoppedTag}: epoch ${s.epoch}/${s.total_epochs} ` +
                     `(loss=${s.loss.toExponential(2)}, ` +
                     `elapsed=${s.elapsed_sec.toFixed(1)}s).`;
-                if (!state.autoStressDone) {
+                if (!state.autoStressDone && !s.stopped) {
+                    // Skip the auto-stress test on user-initiated stop —
+                    // the training was cut short, the snapshot probably
+                    // isn't a converged keypair yet.
                     state.autoStressDone = true;
                     autoRunStressTest();
                 }

@@ -569,6 +569,119 @@ void handle_post_run_training(const ServerConfig& cfg,
     res.set_content(resp.dump(), "application/json");
 }
 
+// ---- /api/stop_training -------------------------------------------------
+//
+// Body: {"pid": <integer>}.  Validates that the pid belongs to a
+// "ssns-benchmark" process (best-effort check via /proc/<pid>/comm), then
+// sends SIGTERM.  Always re-writes training_status.json with running=false
+// + a "stopped":true marker so the frontend's poller settles cleanly even
+// if the child got SIGKILLed mid-write.
+void handle_post_stop_training(const ServerConfig& cfg,
+                               const httplib::Request& req, httplib::Response& res) {
+    json body;
+    try {
+        body = json::parse(req.body);
+    } catch (const std::exception& e) {
+        send_error(res, 422, std::string("invalid JSON body: ") + e.what());
+        return;
+    }
+    if (!body.contains("pid") || !body["pid"].is_number_integer()) {
+        send_error(res, 422, "missing or invalid 'pid' field (integer expected)");
+        return;
+    }
+    pid_t pid = static_cast<pid_t>(body["pid"].get<long long>());
+    if (pid <= 1) {
+        send_error(res, 422, "pid must be > 1");
+        return;
+    }
+
+    // Sanity: confirm this pid points at a benchmark process.  We accept
+    // both /proc/<pid>/comm == "ssns-benchmark" and any cmdline containing
+    // the configured benchmark binary basename.
+    bool looks_like_benchmark = false;
+    {
+        std::ifstream comm_in("/proc/" + std::to_string(pid) + "/comm");
+        std::string comm;
+        if (comm_in && std::getline(comm_in, comm)) {
+            // Linux truncates comm to 15 chars; "ssns-benchmark" is 14 — fits.
+            if (comm.find("ssns-benchmark") != std::string::npos) {
+                looks_like_benchmark = true;
+            }
+        }
+        if (!looks_like_benchmark) {
+            std::ifstream cmd_in("/proc/" + std::to_string(pid) + "/cmdline");
+            std::string cmdline;
+            if (cmd_in) {
+                std::ostringstream oss; oss << cmd_in.rdbuf();
+                cmdline = oss.str();
+                if (cmdline.find("ssns-benchmark") != std::string::npos) {
+                    looks_like_benchmark = true;
+                }
+            }
+        }
+    }
+    if (!looks_like_benchmark) {
+        send_error(res, 404, "pid does not refer to a running ssns-benchmark process");
+        return;
+    }
+
+    int kill_rc = ::kill(pid, SIGTERM);
+    int saved_errno = errno;
+
+    // Read the current status (if any) so we can preserve epoch/loss/elapsed
+    // values rather than zeroing them out.  All field reads are guarded
+    // against missing-key / type-mismatch exceptions so a corrupt status
+    // file can't take the endpoint down.
+    json existing;
+    try {
+        std::ifstream in(cfg.training_status_path);
+        if (in) in >> existing;
+    } catch (...) { existing = json::object(); }
+    if (!existing.is_object()) existing = json::object();
+
+    auto get_or = [&](const char* key, auto fallback) -> json {
+        auto it = existing.find(key);
+        if (it == existing.end()) return json(fallback);
+        return *it;
+    };
+
+    // Format current UTC time as ISO-8601 with trailing Z.
+    const auto now_t   = std::chrono::system_clock::now();
+    const std::time_t tt = std::chrono::system_clock::to_time_t(now_t);
+    std::tm tm_buf{}; gmtime_r(&tt, &tm_buf);
+    char ts_buf[64];
+    std::strftime(ts_buf, sizeof(ts_buf), "%Y-%m-%dT%H:%M:%SZ", &tm_buf);
+
+    json final_status = {
+        {"running",      false},
+        {"epoch",        get_or("epoch",        0)},
+        {"total_epochs", get_or("total_epochs", 0)},
+        {"loss",         get_or("loss",         0.0)},
+        {"lr",           get_or("lr",           0.0)},
+        {"started_at",   get_or("started_at",   json())},
+        {"elapsed_sec",  get_or("elapsed_sec",  0.0)},
+        {"eta_sec",      json()},
+        {"completed_at", std::string(ts_buf)},
+        {"stopped",      true},
+    };
+    try {
+        if (cfg.training_status_path.has_parent_path()) {
+            std::filesystem::create_directories(cfg.training_status_path.parent_path());
+        }
+        std::ofstream out(cfg.training_status_path);
+        out << final_status.dump();
+    } catch (...) { /* swallow — kill already sent, response still valid */ }
+
+    json resp = {
+        {"status",  kill_rc == 0 ? "stopped" : "kill_failed"},
+        {"pid",     static_cast<long long>(pid)},
+        {"signal",  "SIGTERM"},
+        {"errno",   kill_rc == 0 ? 0 : saved_errno},
+    };
+    res.status = 200;
+    res.set_content(resp.dump(), "application/json");
+}
+
 void handle_post_manual_test(const ServerConfig& cfg,
                              const httplib::Request& req, httplib::Response& res) {
     json body;
@@ -815,6 +928,9 @@ Server::Server(ServerConfig cfg)
     });
     s.Post("/api/run_training", [this](const httplib::Request& q, httplib::Response& r){
         handle_post_run_training(cfg_, q, r);
+    });
+    s.Post("/api/stop_training", [this](const httplib::Request& q, httplib::Response& r){
+        handle_post_stop_training(cfg_, q, r);
     });
     s.Post("/api/manual_test", [this](const httplib::Request& q, httplib::Response& r){
         handle_post_manual_test(cfg_, q, r);
