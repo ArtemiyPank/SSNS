@@ -137,10 +137,14 @@ html, body {
 }
 .param-action {
     grid-template-columns: 1fr;
-    grid-template-rows: auto auto;
     align-self: end;
 }
-.param-action button { width: 100%; }
+.run-buttons {
+    display: flex;
+    gap: 8px;
+}
+.run-buttons button { flex: 1; }
+.param-action > .run-status { display: block; }
 
 /* Visual divider between sections (encryption, logging). */
 .config-section-break {
