@@ -8,9 +8,15 @@
 //               [--benchmark ./ssns-benchmark]
 #include <cstdlib>
 #include <cstring>
+#include <chrono>
+#include <ctime>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <sstream>
 #include <string>
+
+#include <nlohmann/json.hpp>
 
 #include <ssns/http/server.hpp>
 
@@ -59,6 +65,53 @@ Args parse(int argc, char** argv) {
     return a;
 }
 
+// On startup, repair stale training_status.json: if it claims a run is
+// active but no `ssns-benchmark` process is alive on this host, rewrite
+// the file with running=false + stopped=true so the frontend doesn't
+// permanently re-attach to a ghost run after the server is restarted.
+void heal_stale_status(const fs::path& status_path) {
+    if (!fs::exists(status_path)) return;
+    nlohmann::json j;
+    try {
+        std::ifstream in(status_path);
+        in >> j;
+    } catch (...) { return; }
+    if (!j.is_object() || !j.value("running", false)) return;
+
+    // Cheap process check: scan /proc for any ssns-benchmark.  We don't
+    // know the original pid (the file currently doesn't carry it); if any
+    // benchmark is alive we leave the status alone.
+    bool benchmark_alive = false;
+    for (const auto& entry : fs::directory_iterator("/proc")) {
+        if (!entry.is_directory()) continue;
+        const auto& name = entry.path().filename().string();
+        if (name.empty() || !std::isdigit(static_cast<unsigned char>(name[0]))) continue;
+        std::ifstream comm(entry.path() / "comm");
+        std::string s;
+        if (comm && std::getline(comm, s) && s.find("ssns-benchmark") != std::string::npos) {
+            benchmark_alive = true;
+            break;
+        }
+    }
+    if (benchmark_alive) return;
+
+    const auto now_t = std::chrono::system_clock::now();
+    const std::time_t tt = std::chrono::system_clock::to_time_t(now_t);
+    std::tm tm_buf{}; gmtime_r(&tt, &tm_buf);
+    char ts_buf[64];
+    std::strftime(ts_buf, sizeof(ts_buf), "%Y-%m-%dT%H:%M:%SZ", &tm_buf);
+
+    j["running"]      = false;
+    j["stopped"]      = true;
+    j["completed_at"] = std::string(ts_buf);
+    try {
+        std::ofstream out(status_path);
+        out << j.dump();
+        std::cout << "ssns-server: cleared stale running=true in "
+                  << status_path << " (no live benchmark process)\n";
+    } catch (...) { /* swallow */ }
+}
+
 }  // anon namespace
 
 int main(int argc, char** argv) try {
@@ -68,6 +121,8 @@ int main(int argc, char** argv) try {
     cfg.training_data_path   = a.data_path;
     cfg.training_status_path = a.status_path;
     cfg.benchmark_binary     = a.benchmark;
+
+    heal_stale_status(cfg.training_status_path);
 
     ssns::http::Server srv(cfg);
     std::cout << "ssns-server listening on http://" << a.host << ":" << a.port
