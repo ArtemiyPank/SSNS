@@ -30,8 +30,30 @@ struct Args {
     fs::path ui_dir       = "ui";
     fs::path data_path    = "ui_data/training_log.json";
     fs::path status_path  = "ui_data/training_status.json";
-    fs::path benchmark    = "./ssns-benchmark";
+    fs::path benchmark    = "";   // auto-resolved if left blank
+    bool benchmark_explicit = false;
 };
+
+// Pick the most likely path to ssns-benchmark relative to CWD.  The
+// canonical source layout puts it under build/, but if the user cd's into
+// build/ and runs `./ssns-server` directly the binary is alongside.  We
+// also fall back to PATH lookup via execvp's own search (handled by the
+// HTTP layer), but report a clear error if no candidate exists at boot.
+fs::path autodetect_benchmark() {
+    const fs::path candidates[] = {
+        "./build/ssns-benchmark",
+        "./ssns-benchmark",
+        "../build/ssns-benchmark",
+    };
+    for (const auto& c : candidates) {
+        std::error_code ec;
+        if (fs::exists(c, ec) && !ec) {
+            return fs::weakly_canonical(c, ec);
+        }
+    }
+    // Last-ditch: PATH lookup will be attempted at exec time.
+    return "./ssns-benchmark";
+}
 
 [[noreturn]] void die(const std::string& msg) {
     std::cerr << "ssns-server: " << msg << "\n";
@@ -53,7 +75,7 @@ Args parse(int argc, char** argv) {
         else if (eq(k, "--ui-dir"))    a.ui_dir = next();
         else if (eq(k, "--data"))      a.data_path = next();
         else if (eq(k, "--status"))    a.status_path = next();
-        else if (eq(k, "--benchmark")) a.benchmark = next();
+        else if (eq(k, "--benchmark")) { a.benchmark = next(); a.benchmark_explicit = true; }
         else if (eq(k, "--help") || eq(k, "-h")) {
             std::cout
                 << "ssns-server [--host H] [--port P] [--ui-dir D]\n"
@@ -116,6 +138,18 @@ void heal_stale_status(const fs::path& status_path) {
 
 int main(int argc, char** argv) try {
     auto a = parse(argc, argv);
+    if (!a.benchmark_explicit && a.benchmark.empty()) {
+        a.benchmark = autodetect_benchmark();
+    }
+    {
+        std::error_code ec;
+        const bool exists = fs::exists(a.benchmark, ec) && !ec;
+        if (!exists) {
+            std::cerr << "ssns-server: WARNING benchmark binary not found at '"
+                      << a.benchmark << "'.  /api/run_training will fail until "
+                      << "you build ssns-benchmark or pass --benchmark <path>.\n";
+        }
+    }
     ssns::http::ServerConfig cfg{};
     cfg.ui_dir               = a.ui_dir;
     cfg.training_data_path   = a.data_path;

@@ -547,6 +547,25 @@ void handle_post_run_training(const ServerConfig& cfg,
         send_error(res, 422, err);
         return;
     }
+    // Pre-fork existence check — if the benchmark binary doesn't exist or
+    // isn't executable, fail loudly with a 500 instead of silently leaving
+    // the user staring at "epoch 0 / N, elapsed 0.0s" forever (the child
+    // would die on execvp ENOENT and the parent never notices).
+    {
+        std::error_code ec;
+        const bool ok =
+            std::filesystem::exists(cfg.benchmark_binary, ec) && !ec
+            && (::access(cfg.benchmark_binary.c_str(), X_OK) == 0);
+        if (!ok) {
+            send_error(res, 500,
+                "benchmark binary not found or not executable at " +
+                cfg.benchmark_binary.string() +
+                ". Build ssns-benchmark and/or restart ssns-server with "
+                "--benchmark <path>.");
+            return;
+        }
+    }
+
     auto argv = build_cmd_argv(cfg.benchmark_binary, p,
                                cfg.training_data_path,
                                cfg.training_status_path);
