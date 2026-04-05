@@ -170,7 +170,12 @@ int main(int argc, char** argv) try {
     const auto started_at = std::chrono::system_clock::now();
     io::write_starting_status(a.status_path, a.epochs);
 
-    const long status_interval = std::max<long>(1, a.epochs / 100);
+    // Write progress every epoch when running with FHE (each step is
+    // expensive; the user wants to see something move) or at most every
+    // 1% of total epochs otherwise.  Atomic write ≈ 1 ms — negligible.
+    const long status_interval = a.use_fhe
+        ? 1L
+        : std::max<long>(1, a.epochs / 100);
     double last_loss = 0.0;
     double last_lr   = 0.0;
 
