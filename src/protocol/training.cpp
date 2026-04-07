@@ -192,22 +192,34 @@ ClientPayload client_encrypt(
     const std::size_t H_cols     = H.cols();
     const std::size_t Y_cols     = Y_pred.cols();
 
-    std::vector<Ciphertext> H_ct;
-    std::vector<Ciphertext> Y_pred_ct;
-    H_ct.reserve(batch_size * H_cols);
-    Y_pred_ct.reserve(batch_size * Y_cols);
+    // Pre-derive per-task RNG seeds from the caller's fhe_rng so the
+    // encryption noise is deterministic regardless of thread schedule.
+    // Each scalar's encryption gets its own mt19937_64 instance.
+    const std::size_t H_count = batch_size * H_cols;
+    const std::size_t Y_count = batch_size * Y_cols;
+    std::vector<std::uint64_t> H_seeds(H_count);
+    std::vector<std::uint64_t> Y_seeds(Y_count);
+    for (auto& s : H_seeds) s = fhe_rng();
+    for (auto& s : Y_seeds) s = fhe_rng();
 
-    for (std::size_t i = 0; i < batch_size; ++i) {
-        for (std::size_t h = 0; h < H_cols; ++h) {
-            H_ct.push_back(encrypt_scalar(*keys.encoder, *keys.ntts, *keys.pk,
-                                           H(i, h), keys.scale, fhe_rng));
-        }
+    std::vector<Ciphertext> H_ct(H_count);
+    std::vector<Ciphertext> Y_pred_ct(Y_count);
+
+    #pragma omp parallel for schedule(static)
+    for (std::size_t k = 0; k < H_count; ++k) {
+        const std::size_t i = k / H_cols;
+        const std::size_t h = k % H_cols;
+        std::mt19937_64 rk(H_seeds[k]);
+        H_ct[k] = encrypt_scalar(*keys.encoder, *keys.ntts, *keys.pk,
+                                  H(i, h), keys.scale, rk);
     }
-    for (std::size_t i = 0; i < batch_size; ++i) {
-        for (std::size_t o = 0; o < Y_cols; ++o) {
-            Y_pred_ct.push_back(encrypt_scalar(*keys.encoder, *keys.ntts, *keys.pk,
-                                                Y_pred(i, o), keys.scale, fhe_rng));
-        }
+    #pragma omp parallel for schedule(static)
+    for (std::size_t k = 0; k < Y_count; ++k) {
+        const std::size_t i = k / Y_cols;
+        const std::size_t o = k % Y_cols;
+        std::mt19937_64 rk(Y_seeds[k]);
+        Y_pred_ct[k] = encrypt_scalar(*keys.encoder, *keys.ntts, *keys.pk,
+                                       Y_pred(i, o), keys.scale, rk);
     }
 
     return ClientPayload{
@@ -238,30 +250,34 @@ ServerResponse server_compute_gradients(
 
     // ---- error = (Y_pred − Y_true) * (1/batch) -------------------------
     const double inv_batch = 1.0 / static_cast<double>(batch_size);
-    std::vector<Ciphertext> error_ct;
-    error_ct.reserve(batch_size * Y_cols);
-    for (std::size_t i = 0; i < batch_size; ++i) {
-        for (std::size_t o = 0; o < Y_cols; ++o) {
-            Plaintext yt_pt = encode_scalar(*keys.encoder, *keys.ntts,
-                                             Y_true(i, o), keys.scale, NUM_PRIMES);
-            Ciphertext diff   = sub_plain(payload.Y_pred_ct[i * Y_cols + o], yt_pt);
-            Ciphertext scaled = mul_scalar(diff, inv_batch);
-            Ciphertext err    = rescale(scaled, *keys.ntts);
-            error_ct.push_back(std::move(err));
-        }
+    const std::size_t E_count = batch_size * Y_cols;
+    std::vector<Ciphertext> error_ct(E_count);
+    #pragma omp parallel for schedule(static)
+    for (std::size_t k = 0; k < E_count; ++k) {
+        const std::size_t i = k / Y_cols;
+        const std::size_t o = k % Y_cols;
+        Plaintext yt_pt = encode_scalar(*keys.encoder, *keys.ntts,
+                                         Y_true(i, o), keys.scale, NUM_PRIMES);
+        Ciphertext diff   = sub_plain(payload.Y_pred_ct[k], yt_pt);
+        Ciphertext scaled = mul_scalar(diff, inv_batch);
+        error_ct[k]       = rescale(scaled, *keys.ntts);
     }
 
     // ---- Bring H to level 3 (matching error's scale chain) -------------
-    std::vector<Ciphertext> H_l3;
-    H_l3.reserve(batch_size * H_cols);
-    for (const auto& ct : payload.H_ct) {
-        Ciphertext bumped = mul_scalar(ct, 1.0);
-        H_l3.push_back(rescale(bumped, *keys.ntts));
+    const std::size_t H_count = payload.H_ct.size();
+    std::vector<Ciphertext> H_l3(H_count);
+    #pragma omp parallel for schedule(static)
+    for (std::size_t k = 0; k < H_count; ++k) {
+        Ciphertext bumped = mul_scalar(payload.H_ct[k], 1.0);
+        H_l3[k] = rescale(bumped, *keys.ntts);
     }
 
     // ---- grad_W2[h,o] = Σ_i H[i,h] * error[i,o] (cipher × cipher) -----
-    std::vector<Ciphertext> grad_W2_ct;
-    grad_W2_ct.reserve(H_cols * Y_cols);
+    // H_cols × Y_cols independent reductions — perfect for thread fanout.
+    // mul_cipher / rescale read shared evk/ntts but never mutate them and
+    // allocate their outputs on the stack/heap, so no locking is needed.
+    std::vector<Ciphertext> grad_W2_ct(H_cols * Y_cols);
+    #pragma omp parallel for collapse(2) schedule(static)
     for (std::size_t h = 0; h < H_cols; ++h) {
         for (std::size_t o = 0; o < Y_cols; ++o) {
             Ciphertext acc = mul_cipher(H_l3[0 * H_cols + h],
@@ -273,7 +289,7 @@ ServerResponse server_compute_gradients(
                                               *keys.evk, *keys.ntts);
                 acc = add(acc, term);
             }
-            grad_W2_ct.push_back(rescale(acc, *keys.ntts));
+            grad_W2_ct[h * Y_cols + o] = rescale(acc, *keys.ntts);
         }
     }
 
@@ -286,8 +302,8 @@ ServerResponse server_compute_gradients(
                                            B_FA(o, h), keys.scale, /*level=*/3));
         }
     }
-    std::vector<Ciphertext> error_hidden_ct;
-    error_hidden_ct.reserve(batch_size * H_cols);
+    std::vector<Ciphertext> error_hidden_ct(batch_size * H_cols);
+    #pragma omp parallel for collapse(2) schedule(static)
     for (std::size_t i = 0; i < batch_size; ++i) {
         for (std::size_t h = 0; h < H_cols; ++h) {
             Ciphertext acc = mul_plain(error_ct[i * Y_cols + 0],
@@ -297,7 +313,7 @@ ServerResponse server_compute_gradients(
                                              bfa_pt[o * H_cols + h]);
                 acc = add(acc, term);
             }
-            error_hidden_ct.push_back(std::move(acc));
+            error_hidden_ct[i * H_cols + h] = std::move(acc);
         }
     }
 
@@ -322,12 +338,14 @@ DecryptedGradients client_decrypt(
         linalg::Matrix(response.H_cols, response.Y_cols),
         linalg::Matrix(response.batch_size, response.H_cols),
     };
+    #pragma omp parallel for collapse(2) schedule(static)
     for (std::size_t h = 0; h < response.H_cols; ++h) {
         for (std::size_t o = 0; o < response.Y_cols; ++o) {
             out.grad_W2(h, o) = decrypt_scalar(*keys.encoder, *keys.ntts, *keys.sk,
                                                 response.grad_W2_ct[h * response.Y_cols + o]);
         }
     }
+    #pragma omp parallel for collapse(2) schedule(static)
     for (std::size_t i = 0; i < response.batch_size; ++i) {
         for (std::size_t h = 0; h < response.H_cols; ++h) {
             out.error_hidden(i, h) = decrypt_scalar(*keys.encoder, *keys.ntts, *keys.sk,

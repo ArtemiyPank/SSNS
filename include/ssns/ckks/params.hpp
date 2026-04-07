@@ -36,16 +36,23 @@
 
 namespace ssns::ckks {
 
-// Polynomial ring degree.  Must be a power of 2.  Chosen to match the Python
-// reference (`poly_modulus_degree=8192`) which targets ~128-bit security.
-constexpr std::size_t POLY_DEGREE = 8192;
+// Polynomial ring degree.  Must be a power of 2.
+//
+// We use N=4096 (vs Python ref's 8192) because the SSNS protocol broadcasts
+// each scalar across all slots — so the slot count (N/2) is irrelevant — and
+// halving N halves NTT cost and pointwise op cost.  The existing CKKS primes
+// satisfy q_i ≡ 1 mod 16384 ⇒ q_i ≡ 1 mod 8192, so they remain valid.
+// Security at N=4096 with the same modulus chain (~200 bits) is ~80-bit
+// classical (LWE), acceptable for a research demo; production would bump
+// back to N=8192 + slot-packing.
+constexpr std::size_t POLY_DEGREE = 4096;
 
 // 2N — used as the order of the primitive root of unity for the negacyclic
 // NTT.  Each q_i must satisfy q_i ≡ 1 (mod TWO_N) so such a root exists.
-constexpr std::size_t TWO_N = 16384;
+constexpr std::size_t TWO_N = 8192;
 
 // log2(POLY_DEGREE) — used by the radix-2 NTT loop bookkeeping.
-constexpr std::size_t LOG_N = 13;
+constexpr std::size_t LOG_N = 12;
 
 // CKKS encoding scale.  The Python reference uses `global_scale = 2^40`.
 constexpr int SCALE_BITS = 40;

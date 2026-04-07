@@ -10,8 +10,13 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 add_compile_options(-Wall -Wextra -Wpedantic)
+
+find_package(OpenMP)
+if(OpenMP_CXX_FOUND)
+    message(STATUS "Using OpenMP: ${OpenMP_CXX_VERSION}")
+endif()
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
-    add_compile_options(-O2 -march=native -fno-omit-frame-pointer)
+    add_compile_options(-O3 -march=native -funroll-loops -fno-omit-frame-pointer)
 elseif(CMAKE_BUILD_TYPE STREQUAL "Debug")
     add_compile_options(-O0 -g -fsanitize=address,undefined)
     add_link_options(-fsanitize=address,undefined)
@@ -65,6 +70,9 @@ if(SSNS_CORE_SOURCES)
     # cpp-httplib (used by src/http/server.cpp) needs pthread on POSIX.
     find_package(Threads REQUIRED)
     target_link_libraries(ssns_core PUBLIC Threads::Threads)
+    if(OpenMP_CXX_FOUND)
+        target_link_libraries(ssns_core PUBLIC OpenMP::OpenMP_CXX)
+    endif()
 endif()
 
 # CLI subprocess target — same role as scripts/benchmark_fhe_vs_plain.py.
