@@ -84,6 +84,7 @@ const els = {
     archMeta:     $("arch-meta"),
     runBtn:       $("run-btn"),
     stopBtn:      $("stop-btn"),
+    presetFheBtn: $("preset-fhe-btn"),
     runProgress:  $("run-progress"),
     runStatus:    $("run-status"),
     configForm:   $("config-form"),
@@ -234,6 +235,7 @@ function syncDerivedValues() {
 function bindControls() {
     els.configForm.addEventListener("submit", onRun);
     els.stopBtn.addEventListener("click", onStop);
+    els.presetFheBtn.addEventListener("click", applyFhePreset);
     els.epochSlider.addEventListener("input", onEpochChange);
     els.batchSelect.addEventListener("change", onBatchChange);
     els.showWeights.addEventListener("change", onShowWeightsChange);
@@ -309,6 +311,41 @@ async function onRun(e) {
         setStatus("Error", "error");
         els.runBtn.disabled = false;
     }
+}
+
+// "FHE preset" button — fills the form with a config tuned for ~10 min
+// CKKS training that visibly converges (T=4/4, S=16, Y=20, batch=8,
+// 200 epochs).  See benchmarks: per-epoch ~2.5 s on this machine.
+function applyFhePreset() {
+    const preset = {
+        T_input:         4,
+        T_hidden:        4,
+        S_hidden:        16,
+        output_clusters: 4,    // × cluster_size 5 → output_dim = 20
+        cluster_size:    5,
+        batch_size:      8,
+        epochs:          200,
+        dz:              0.10,
+        lr_max:          0.01,
+        warmup_frac:     0.05,
+        samples_to_log:  2,
+        snapshot_count:  20,
+    };
+    for (const [name, val] of Object.entries(preset)) {
+        const el = els.configForm.elements[name];
+        if (!el) continue;
+        el.value = String(val);
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    const fhe = els.configForm.elements.use_fhe;
+    if (fhe) {
+        fhe.checked = true;
+        fhe.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    syncDerivedValues();
+    els.runStatus.classList.remove("error", "ok");
+    els.runStatus.textContent =
+        "FHE preset applied (T=4/4 S=16 Y=20 B=8, 200 epochs, ~10 min). Press Run Training.";
 }
 
 // Stop button handler — POST /api/stop_training with the stored pid.

@@ -22,25 +22,25 @@
 
         <div class="param">
             <label for="T_input">T_input</label>
-            <input type="range" id="T_input" name="T_input" min="16" max="256" step="16" value="64">
+            <input type="range" id="T_input" name="T_input" min="2" max="256" step="2" value="64">
             <output for="T_input" class="param-value mono">64</output>
         </div>
 
         <div class="param">
             <label for="T_hidden">T_hidden</label>
-            <input type="range" id="T_hidden" name="T_hidden" min="16" max="512" step="16" value="64">
+            <input type="range" id="T_hidden" name="T_hidden" min="2" max="512" step="2" value="64">
             <output for="T_hidden" class="param-value mono">64</output>
         </div>
 
         <div class="param">
             <label for="S_hidden">S_hidden</label>
-            <input type="range" id="S_hidden" name="S_hidden" min="64" max="1024" step="64" value="192">
+            <input type="range" id="S_hidden" name="S_hidden" min="4" max="1024" step="4" value="192">
             <output for="S_hidden" class="param-value mono">192</output>
         </div>
 
         <div class="param">
             <label for="output_clusters">output_clusters</label>
-            <input type="range" id="output_clusters" name="output_clusters" min="8" max="512" step="8" value="256">
+            <input type="range" id="output_clusters" name="output_clusters" min="2" max="512" step="2" value="256">
             <output for="output_clusters" class="param-value mono">256</output>
         </div>
 
@@ -118,6 +118,7 @@
 
         <div class="param param-action">
             <div class="run-buttons">
+                <button type="button" id="preset-fhe-btn" class="secondary" title="Apply medium FHE config that finishes in ~10 min">FHE preset</button>
                 <button type="submit" id="run-btn" class="primary">Run Training</button>
                 <button type="button" id="stop-btn" class="secondary" hidden>Stop</button>
             </div>
