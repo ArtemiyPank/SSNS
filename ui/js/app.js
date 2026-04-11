@@ -316,24 +316,24 @@ async function onRun(e) {
 // "FHE preset" button — fills the form with a config tuned for ~10 min
 // CKKS training.
 //
-// Honest trade-off documented in tests/test_key_agreement_e2e.cpp:
-//   — "Bigger network + more clusters" gives higher shared-bit yield
-//     per trial BUT requires far more epochs (1000+) to fully converge.
-//     At 200 ep the Student-Teacher gap is wide enough to occasionally
-//     cross [0.4-dz, 0.4+dz] in opposite directions → key mismatch.
-//     We cannot afford 1000+ ep at bigger size in a 15 min FHE budget.
-//   — Smaller network with low yield (this preset) keeps Teacher
-//     outputs concentrated near 0.5, so most clusters get dead-zoned
-//     out — but the few that DO survive agree perfectly.  Verified:
-//     0 mismatches across 10 000 stress trials.
+// Key insight (verified by tests/test_key_agreement_e2e.cpp [.sweep]):
+//   Teacher is computed PLAINTEXT server-side, so widening T_hidden has
+//   ZERO impact on FHE cost.  Going T_hidden 4 → 16 jumps shared-bit
+//   yield from 0.64 → 1.84 per trial (≈2.9× more bits) at the same
+//   ~10 min wall time, while keeping zero mismatches at 200 ep, dz=0.10.
 //
-// Result: low-yield (≈0.7 shared bits/trial) but cryptographically
-// correct.  For high-yield demos, untick "Use CKKS FHE" — plaintext at
-// v9-scale dims trains in seconds and gives 100+ shared bits/trial.
+// Sweep grid checked: T_in {4,8} × T_h {4,16} × S {16,32} × Y {20,40}
+//   × ep {200,1000}.  Best yield-with-zero-mismatch at FHE-budget cost:
+//
+//     T=4/16  S=16  Y=20  B=8  ep=200  dz=0.10
+//                       → 1.84 shared/trial,  0 mismatches
+//
+// Bigger configs (Y=40 etc.) need ≥1000 ep to be mismatch-safe, which
+// busts the 15 min FHE budget.
 function applyFhePreset() {
     const preset = {
         T_input:         4,
-        T_hidden:        4,
+        T_hidden:        16,    // wider Teacher — free in FHE, +2.9x yield
         S_hidden:        16,
         output_clusters: 4,    // × cluster_size 5 → output_dim = 20
         cluster_size:    5,
@@ -359,7 +359,7 @@ function applyFhePreset() {
     syncDerivedValues();
     els.runStatus.classList.remove("error", "ok");
     els.runStatus.textContent =
-        "FHE preset applied (T=4/4 S=16 Y=20, 200 ep, ~10 min, ~0.7 shared bits/trial, 0 mismatches). Press Run Training.";
+        "FHE preset applied (T=4/16 S=16 Y=20, 200 ep, ~10 min, ~1.84 shared bits/trial, 0 mismatches). Press Run Training.";
 }
 
 // Stop button handler — POST /api/stop_training with the stored pid.
