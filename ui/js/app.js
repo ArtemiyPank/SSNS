@@ -82,11 +82,13 @@ const $ = (id) => document.getElementById(id);
 const els = {
     statusPill:   $("status-pill"),
     archMeta:     $("arch-meta"),
-    runBtn:       $("run-btn"),
-    stopBtn:      $("stop-btn"),
-    presetFheBtn: $("preset-fhe-btn"),
-    runProgress:  $("run-progress"),
-    runStatus:    $("run-status"),
+    runBtn:           $("run-btn"),
+    stopBtn:          $("stop-btn"),
+    presetFheFastBtn: $("preset-fhe-fast-btn"),
+    presetFheBtn:     $("preset-fhe-btn"),
+    presetFheRichBtn: $("preset-fhe-rich-btn"),
+    runProgress:      $("run-progress"),
+    runStatus:        $("run-status"),
     configForm:   $("config-form"),
     epochSlider:  $("epoch-slider"),
     epochDisplay: $("epoch-display"),
@@ -235,7 +237,9 @@ function syncDerivedValues() {
 function bindControls() {
     els.configForm.addEventListener("submit", onRun);
     els.stopBtn.addEventListener("click", onStop);
+    els.presetFheFastBtn.addEventListener("click", applyFhePresetFast);
     els.presetFheBtn.addEventListener("click", applyFhePreset);
+    els.presetFheRichBtn.addEventListener("click", applyFhePresetRich);
     els.epochSlider.addEventListener("input", onEpochChange);
     els.batchSelect.addEventListener("change", onBatchChange);
     els.showWeights.addEventListener("change", onShowWeightsChange);
@@ -313,36 +317,29 @@ async function onRun(e) {
     }
 }
 
-// "FHE preset" button — fills the form with a config tuned for ~10 min
-// CKKS training.
+// FHE presets — three variants tuned for different wall-time budgets.
 //
-// Two free wins discovered via tests/test_key_agreement_e2e.cpp [.sweep]:
+// Common shared-secret recipe (verified by tests/test_key_agreement_e2e.cpp):
+//   T_in=4, T_h=16  — wider Teacher is free in FHE (Teacher is plaintext
+//                      server-side); spreads sigmoid outputs out of dead-zone
+//   S_h=16, Y=20    — modest Student capacity, cheap mul_cipher count
+//   batch=4         — halves per-step FHE cost vs batch=8 with marginal
+//                      yield loss
+//   dz=0.10         — verified mismatch-safe at 200+ epochs
 //
-//   1. Teacher is plaintext server-side → widening T_hidden costs zero
-//      FHE budget but spreads sigmoid outputs out of dead-zone.
-//      T_hidden 4 → 16 jumps yield from 0.64 → 1.84 shared bits/trial.
-//
-//   2. FHE cost is linear in batch_size (batch × S × Y mul_ciphers per
-//      step).  Halving batch from 8→4 halves per-epoch cost; doubling
-//      epochs back to 400 keeps total wall time the same — but doubles
-//      the number of Adam steps, lifting yield from 1.84 → 1.97/trial.
-//
-// Best config at the ~10 min FHE budget (16-thread CPU, N=4096):
-//
-//     T=4/16  S=16  Y=20  batch=4  ep=400  dz=0.10
-//                          → 1.97 shared/trial,  0 mismatches
-//
-// Going wider/longer (ep=800: 2.07/trial, batch=8 Y=40 ep=500: 2.75)
-// requires 2-3× more wall time.
-function applyFhePreset() {
+// Per-preset epochs:
+//   fast:    ep=200  → ~5  min, ~1.79 shared/trial (sweep)
+//   default: ep=400  → ~10 min, ~1.97 shared/trial (sweep)
+//   rich:    ep=800  → ~20 min, ~2.07 shared/trial (sweep)
+function applyFhePresetVariant(epochs, label, expectedYield) {
     const preset = {
         T_input:         4,
-        T_hidden:        16,    // wider Teacher — free in FHE
+        T_hidden:        16,
         S_hidden:        16,
-        output_clusters: 4,    // × cluster_size 5 → output_dim = 20
+        output_clusters: 4,
         cluster_size:    5,
-        batch_size:      4,    // smaller batch — half per-step cost
-        epochs:          400,  // doubled to keep total wall time
+        batch_size:      4,
+        epochs:          epochs,
         dz:              0.10,
         lr_max:          0.01,
         warmup_frac:     0.05,
@@ -363,8 +360,12 @@ function applyFhePreset() {
     syncDerivedValues();
     els.runStatus.classList.remove("error", "ok");
     els.runStatus.textContent =
-        "FHE preset applied (T=4/16 S=16 Y=20 B=4, 400 ep, ~10 min, ~1.97 shared bits/trial, 0 mismatches). Press Run Training.";
+        `${label} applied (T=4/16 S=16 Y=20 B=4 ep=${epochs}, ~${expectedYield} shared bits/trial, 0 mismatches). Press Run Training.`;
 }
+
+function applyFhePresetFast()    { applyFhePresetVariant(200, "FHE fast preset",  "1.79"); }
+function applyFhePreset()        { applyFhePresetVariant(400, "FHE preset",        "1.97"); }
+function applyFhePresetRich()    { applyFhePresetVariant(800, "FHE rich preset",  "2.07"); }
 
 // Stop button handler — POST /api/stop_training with the stored pid.
 async function onStop() {
