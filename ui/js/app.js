@@ -454,15 +454,18 @@ function stopAllPolling() {
 //   - Stop after N consecutive 404s (status file vanished mid-run).
 // ---------------------------------------------------------------------------
 
-const STATUS_POLL_MS    = 500;
-const STATUS_MAX_TICKS  = 1200;   // 1200 * 500ms = 10 min hard ceiling
-const STATUS_MAX_404    = 30;     // 30 * 500ms = 15s of consecutive 404s
+const STATUS_POLL_MS      = 500;
+const STATUS_MAX_404      = 30;            // 30 * 500ms = 15s of consecutive 404s
+const STALL_TIMEOUT_MS    = 10 * 60 * 1000; // 10 min of no epoch advance = stuck
+const HARD_CEILING_MS     = 4  * 60 * 60 * 1000; // 4 h hard ceiling, no matter what
 
 function startStatusPolling(_params) {
     if (state.statusPolling) clearInterval(state.statusPolling);
 
-    let ticks = 0;
-    let consecutive404 = 0;
+    const startedAt        = Date.now();
+    let consecutive404     = 0;
+    let lastProgressEpoch  = -1;
+    let lastProgressAt     = startedAt;
 
     const giveUp = (reason) => {
         stopAllPolling();
@@ -479,9 +482,17 @@ function startStatusPolling(_params) {
     };
 
     const tick = async () => {
-        ticks += 1;
-        if (ticks > STATUS_MAX_TICKS) {
-            giveUp(`watched ${STATUS_MAX_TICKS} ticks (~${(STATUS_MAX_TICKS*STATUS_POLL_MS/60000)|0} min) without completion`);
+        const now = Date.now();
+        // Hard ceiling — last-resort fuse if everything else fails.
+        if (now - startedAt > HARD_CEILING_MS) {
+            giveUp(`hard ceiling reached (${(HARD_CEILING_MS/3600000)|0} h)`);
+            return;
+        }
+        // Stall detector — give up if epoch hasn't advanced in STALL_TIMEOUT_MS.
+        // This adapts automatically to any wall-clock budget: a slow but
+        // *progressing* training is fine; a frozen subprocess is not.
+        if (now - lastProgressAt > STALL_TIMEOUT_MS) {
+            giveUp(`no epoch advance for ${(STALL_TIMEOUT_MS/60000)|0} min (subprocess likely dead)`);
             return;
         }
         try {
@@ -495,6 +506,11 @@ function startStatusPolling(_params) {
             }
             consecutive404 = 0;
             if (s.running) state.seenRunning = true;
+            // Refresh stall timer whenever we see real forward progress.
+            if (typeof s.epoch === "number" && s.epoch > lastProgressEpoch) {
+                lastProgressEpoch = s.epoch;
+                lastProgressAt    = now;
+            }
 
             // Live progress while training: epoch counter + loss + elapsed.
             // The eta_sec field is best-effort; only render it when present.
