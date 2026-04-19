@@ -15,11 +15,12 @@ Plaintext decrypt(const Ciphertext& ct,
     for (std::size_t i = 0; i < NUM_PRIMES; ++i) {
         ntts[i].forward(s_ntt.residues[i].data());
     }
+    return decrypt_with_ntt_sk(ct, s_ntt);
+}
 
-    // 2. c1 · s in NTT form (pointwise multiplication).
+Plaintext decrypt_with_ntt_sk(const Ciphertext& ct, const Polynomial& s_ntt) {
+    // c1 · s_ntt pointwise, then add c0.  Both sides already NTT form.
     Polynomial c1s = pointwise_mul_ntt(ct.c1, s_ntt);
-
-    // 3. pt.poly = c0 + c1·s   (mod q), still in NTT form.
     Polynomial pt_poly = pointwise_add(ct.c0, c1s);
 
     Plaintext pt;

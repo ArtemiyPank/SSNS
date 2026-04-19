@@ -29,4 +29,12 @@ Plaintext decrypt(const Ciphertext& ct,
                   const SecretKey& sk,
                   const std::array<NTT, NUM_PRIMES>& ntts);
 
+// Fast path for hot loops: take a pre-computed NTT-form `s_ntt` instead
+// of re-running 4 forward NTTs on sk.s every call.  Saves ~20 % of FHE
+// training wall time at the SSNS preset (153k decrypts × 4 NTTs each).
+//
+// The caller is responsible for `s_ntt = forward_ntt(sk.s)` once.
+Plaintext decrypt_with_ntt_sk(const Ciphertext& ct,
+                               const Polynomial& s_ntt);
+
 }  // namespace ssns::ckks

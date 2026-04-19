@@ -135,11 +135,13 @@ Ciphertext encrypt_scalar(const Encoder& encoder,
 }
 
 // Decrypt a broadcast-scalar ciphertext and read slot 0's real part.
+// Uses pre-computed NTT-form sk to skip 4 forward NTTs per call —
+// crucial for the hot decrypt loop at preset config (153k decrypts).
 double decrypt_scalar(const Encoder& encoder,
                       const std::array<NTT, NUM_PRIMES>& ntts,
-                      const SecretKey& sk,
+                      const Polynomial& s_ntt,
                       const Ciphertext& ct) {
-    Plaintext pt = decrypt(ct, sk, ntts);
+    Plaintext pt = decrypt_with_ntt_sk(ct, s_ntt);
     Polynomial coeff = pt.poly;
     for (std::size_t i = 0; i < pt.level; ++i) {
         ntts[i].inverse(coeff.residues[i].data());
@@ -160,6 +162,7 @@ ClientKeys make_client_keys(const ckks::Backend& backend) {
         /*pk=*/      &backend.pk,
         /*ntts=*/    &backend.ntts,
         /*encoder=*/ &backend.encoder,
+        /*s_ntt=*/   &backend.s_ntt,
         /*scale=*/   backend.scale,
     };
 }
@@ -341,14 +344,14 @@ DecryptedGradients client_decrypt(
     #pragma omp parallel for collapse(2) schedule(static)
     for (std::size_t h = 0; h < response.H_cols; ++h) {
         for (std::size_t o = 0; o < response.Y_cols; ++o) {
-            out.grad_W2(h, o) = decrypt_scalar(*keys.encoder, *keys.ntts, *keys.sk,
+            out.grad_W2(h, o) = decrypt_scalar(*keys.encoder, *keys.ntts, *keys.s_ntt,
                                                 response.grad_W2_ct[h * response.Y_cols + o]);
         }
     }
     #pragma omp parallel for collapse(2) schedule(static)
     for (std::size_t i = 0; i < response.batch_size; ++i) {
         for (std::size_t h = 0; h < response.H_cols; ++h) {
-            out.error_hidden(i, h) = decrypt_scalar(*keys.encoder, *keys.ntts, *keys.sk,
+            out.error_hidden(i, h) = decrypt_scalar(*keys.encoder, *keys.ntts, *keys.s_ntt,
                                                      response.error_hidden_ct[i * response.H_cols + h]);
         }
     }

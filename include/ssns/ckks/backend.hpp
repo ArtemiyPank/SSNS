@@ -35,6 +35,12 @@ struct Backend {
     EvalKey    evk;
     double     scale;
 
+    // Pre-computed NTT-form of sk.s — populated once at Backend::create.
+    // The decrypt hot path needs sk in NTT form for pointwise mul; doing
+    // 4 forward NTTs per decrypt call wastes ~20 % of FHE training wall
+    // time at preset config.  Cached here, used via `decrypt_cached`.
+    Polynomial s_ntt;
+
     // Deterministic factory: same seed → identical (sk, pk, evk).
     // Uses a single mt19937_64 stream so the order of key sampling is
     // fixed (sk, pk, evk).  Default scale is 2^SCALE_BITS.

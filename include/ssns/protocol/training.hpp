@@ -105,6 +105,7 @@ struct ClientKeys {
     const ckks::PublicKey* pk;                                 // borrow
     const std::array<ckks::NTT, ckks::NUM_PRIMES>* ntts;       // borrow
     const ckks::Encoder* encoder;                              // borrow
+    const ckks::Polynomial* s_ntt;                             // borrow — cached NTT-form sk
     double scale;
 };
 
