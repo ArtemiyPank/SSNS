@@ -24,6 +24,7 @@
 #include <ssns/ckks/ntt.hpp>
 
 #include <ssns/ckks/modarith.hpp>
+#include <ssns/ckks/params.hpp>
 
 #include <bit>
 #include <stdexcept>
@@ -77,8 +78,78 @@ NTT::NTT(std::uint64_t p, std::size_t N) : p_(p), N_(N) {
     inv_N_ = inv_mod(static_cast<std::uint64_t>(N), p);
 }
 
+// PSM constants for the four CKKS primes.  These are duplicated in
+// ntt_ops.cpp; keeping them inline here keeps the templated forward /
+// inverse self-contained.
+namespace {
+constexpr std::uint64_t PSM_C0 = (std::uint64_t{1} << 60) - COEFF_MODULI[0];
+constexpr std::uint64_t PSM_C1 = (std::uint64_t{1} << 40) - COEFF_MODULI[1];
+constexpr std::uint64_t PSM_C2 = (std::uint64_t{1} << 40) - COEFF_MODULI[2];
+constexpr std::uint64_t PSM_C3 = (std::uint64_t{1} << 60) - COEFF_MODULI[3];
+
+// Templated forward butterfly — `mul_mod_psm{40,60}<P,C>` lets the compiler
+// fully unroll modular reduction at compile time.
+template <std::uint64_t P, std::uint64_t C, bool IS60>
+inline std::uint64_t psm_mul(std::uint64_t a, std::uint64_t b) noexcept {
+    if constexpr (IS60) return mul_mod_psm60<P, C>(a, b);
+    else                return mul_mod_psm40<P, C>(a, b);
+}
+
+template <std::uint64_t P, std::uint64_t C, bool IS60>
+void forward_typed(std::uint64_t* a, std::size_t N,
+                    const std::uint64_t* psi_powers) {
+    std::size_t m = 1;
+    for (std::size_t s = N / 2; s >= 1; s >>= 1) {
+        for (std::size_t j = 0; j < m; ++j) {
+            const std::uint64_t w = psi_powers[m + j];
+            const std::size_t base = 2 * s * j;
+            for (std::size_t k = base; k < base + s; ++k) {
+                const std::uint64_t u = a[k];
+                const std::uint64_t v = psm_mul<P, C, IS60>(a[k + s], w);
+                a[k]     = add_mod(u, v, P);
+                a[k + s] = sub_mod(u, v, P);
+            }
+        }
+        m <<= 1;
+    }
+}
+
+template <std::uint64_t P, std::uint64_t C, bool IS60>
+void inverse_typed(std::uint64_t* a, std::size_t N,
+                    const std::uint64_t* inv_psi_powers, std::uint64_t inv_N) {
+    std::size_t m = N / 2;
+    for (std::size_t s = 1; s < N; s <<= 1) {
+        for (std::size_t j = 0; j < m; ++j) {
+            const std::uint64_t w = inv_psi_powers[m + j];
+            const std::size_t base = 2 * s * j;
+            for (std::size_t k = base; k < base + s; ++k) {
+                const std::uint64_t u = a[k];
+                const std::uint64_t v = a[k + s];
+                a[k]     = add_mod(u, v, P);
+                a[k + s] = psm_mul<P, C, IS60>(sub_mod(u, v, P), w);
+            }
+        }
+        m >>= 1;
+    }
+    for (std::size_t i = 0; i < N; ++i) {
+        a[i] = psm_mul<P, C, IS60>(a[i], inv_N);
+    }
+}
+}  // anonymous namespace
+
 void NTT::forward(std::uint64_t* a) const {
-    // Cooley-Tukey, top-down: s = N/2, N/4, ..., 1.  m = N/(2s) doubles each round.
+    // Hoist the prime to a compile-time constant by dispatching to one of
+    // four template instantiations.  The inner loop then runs PSM
+    // reduction with constant P and C — ~2× faster than the runtime
+    // mul_mod fallback below.
+    const auto* psi = psi_powers_.data();
+    if      (p_ == COEFF_MODULI[0]) { forward_typed<COEFF_MODULI[0], PSM_C0, true >(a, N_, psi); return; }
+    else if (p_ == COEFF_MODULI[3]) { forward_typed<COEFF_MODULI[3], PSM_C3, true >(a, N_, psi); return; }
+    else if (p_ == COEFF_MODULI[1]) { forward_typed<COEFF_MODULI[1], PSM_C1, false>(a, N_, psi); return; }
+    else if (p_ == COEFF_MODULI[2]) { forward_typed<COEFF_MODULI[2], PSM_C2, false>(a, N_, psi); return; }
+
+    // Generic fallback (used only by tests that construct NTT with a
+    // non-CKKS prime, e.g. modarith parity tests).
     const std::uint64_t p = p_;
     std::size_t m = 1;
     for (std::size_t s = N_ / 2; s >= 1; s >>= 1) {
@@ -97,7 +168,13 @@ void NTT::forward(std::uint64_t* a) const {
 }
 
 void NTT::inverse(std::uint64_t* a) const {
-    // Gentleman-Sande, bottom-up: s = 1, 2, ..., N/2.  m = N/(2s) halves each round.
+    const auto* inv_psi = inv_psi_powers_.data();
+    if      (p_ == COEFF_MODULI[0]) { inverse_typed<COEFF_MODULI[0], PSM_C0, true >(a, N_, inv_psi, inv_N_); return; }
+    else if (p_ == COEFF_MODULI[3]) { inverse_typed<COEFF_MODULI[3], PSM_C3, true >(a, N_, inv_psi, inv_N_); return; }
+    else if (p_ == COEFF_MODULI[1]) { inverse_typed<COEFF_MODULI[1], PSM_C1, false>(a, N_, inv_psi, inv_N_); return; }
+    else if (p_ == COEFF_MODULI[2]) { inverse_typed<COEFF_MODULI[2], PSM_C2, false>(a, N_, inv_psi, inv_N_); return; }
+
+    // Generic fallback for non-CKKS primes (tests).
     const std::uint64_t p = p_;
     std::size_t m = N_ / 2;
     for (std::size_t s = 1; s < N_; s <<= 1) {
@@ -113,7 +190,6 @@ void NTT::inverse(std::uint64_t* a) const {
         }
         m >>= 1;
     }
-    // Divide by N.
     for (std::size_t i = 0; i < N_; ++i) {
         a[i] = mul_mod(a[i], inv_N_, p);
     }
