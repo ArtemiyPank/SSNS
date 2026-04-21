@@ -155,18 +155,43 @@ Ciphertext mul_scalar(const Ciphertext& ct, double scalar) {
     Ciphertext out;
     out.scale = ct.scale * bump;
     out.level = ct.level;
-    for (std::size_t i = 0; i < NUM_PRIMES; ++i) {
-        const std::uint64_t q = COEFF_MODULI[i];
-        const std::uint64_t k_i = signed_mod(k, q);
+
+    // PSM hoist: dispatch per prime so the inner mul_mod is constant-folded.
+    constexpr std::uint64_t LO_C0 = (std::uint64_t{1} << 60) - COEFF_MODULI[0];
+    constexpr std::uint64_t LO_C1 = (std::uint64_t{1} << 40) - COEFF_MODULI[1];
+    constexpr std::uint64_t LO_C2 = (std::uint64_t{1} << 40) - COEFF_MODULI[2];
+    constexpr std::uint64_t LO_C3 = (std::uint64_t{1} << 60) - COEFF_MODULI[3];
+    auto run_prime = [&](auto P_v, auto C_v, auto IS60_v, std::size_t i) {
+        constexpr std::uint64_t P  = decltype(P_v)::value;
+        constexpr std::uint64_t C  = decltype(C_v)::value;
+        constexpr bool         IS = decltype(IS60_v)::value;
+        const std::uint64_t k_i = signed_mod(k, P);
         const auto& c0_i = ct.c0.residues[i];
         const auto& c1_i = ct.c1.residues[i];
         auto& out0 = out.c0.residues[i];
         auto& out1 = out.c1.residues[i];
         for (std::size_t j = 0; j < POLY_DEGREE; ++j) {
-            out0[j] = mul_mod(c0_i[j], k_i, q);
-            out1[j] = mul_mod(c1_i[j], k_i, q);
+            if constexpr (IS) {
+                out0[j] = mul_mod_psm60<P, C>(c0_i[j], k_i);
+                out1[j] = mul_mod_psm60<P, C>(c1_i[j], k_i);
+            } else {
+                out0[j] = mul_mod_psm40<P, C>(c0_i[j], k_i);
+                out1[j] = mul_mod_psm40<P, C>(c1_i[j], k_i);
+            }
         }
-    }
+    };
+    run_prime(std::integral_constant<std::uint64_t, COEFF_MODULI[0]>{},
+              std::integral_constant<std::uint64_t, LO_C0>{},
+              std::true_type{},  0);
+    run_prime(std::integral_constant<std::uint64_t, COEFF_MODULI[1]>{},
+              std::integral_constant<std::uint64_t, LO_C1>{},
+              std::false_type{}, 1);
+    run_prime(std::integral_constant<std::uint64_t, COEFF_MODULI[2]>{},
+              std::integral_constant<std::uint64_t, LO_C2>{},
+              std::false_type{}, 2);
+    run_prime(std::integral_constant<std::uint64_t, COEFF_MODULI[3]>{},
+              std::integral_constant<std::uint64_t, LO_C3>{},
+              std::true_type{},  3);
     return out;
 }
 
