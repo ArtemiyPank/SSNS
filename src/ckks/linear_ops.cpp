@@ -156,22 +156,16 @@ Ciphertext mul_scalar(const Ciphertext& ct, double scalar) {
     out.scale = ct.scale * bump;
     out.level = ct.level;
 
-    // PSM hoist: dispatch per prime so the inner mul_mod is constant-folded.
-    constexpr std::uint64_t LO_C0 = (std::uint64_t{1} << 60) - COEFF_MODULI[0];
-    constexpr std::uint64_t LO_C1 = (std::uint64_t{1} << 40) - COEFF_MODULI[1];
-    constexpr std::uint64_t LO_C2 = (std::uint64_t{1} << 40) - COEFF_MODULI[2];
-    constexpr std::uint64_t LO_C3 = (std::uint64_t{1} << 60) - COEFF_MODULI[3];
-    auto run_prime = [&](auto P_v, auto C_v, auto IS60_v, std::size_t i) {
-        constexpr std::uint64_t P  = decltype(P_v)::value;
-        constexpr std::uint64_t C  = decltype(C_v)::value;
-        constexpr bool         IS = decltype(IS60_v)::value;
+    // Per-prime PSM-reduced multiply-by-scalar.  Templated so mul_mod_psm
+    // sees P and C as compile-time constants.  PSM_C lives in params.hpp.
+    auto run_prime = [&]<std::uint64_t P, std::uint64_t C, bool IS60>(std::size_t i) {
         const std::uint64_t k_i = signed_mod(k, P);
         const auto& c0_i = ct.c0.residues[i];
         const auto& c1_i = ct.c1.residues[i];
         auto& out0 = out.c0.residues[i];
         auto& out1 = out.c1.residues[i];
         for (std::size_t j = 0; j < POLY_DEGREE; ++j) {
-            if constexpr (IS) {
+            if constexpr (IS60) {
                 out0[j] = mul_mod_psm60<P, C>(c0_i[j], k_i);
                 out1[j] = mul_mod_psm60<P, C>(c1_i[j], k_i);
             } else {
@@ -180,18 +174,10 @@ Ciphertext mul_scalar(const Ciphertext& ct, double scalar) {
             }
         }
     };
-    run_prime(std::integral_constant<std::uint64_t, COEFF_MODULI[0]>{},
-              std::integral_constant<std::uint64_t, LO_C0>{},
-              std::true_type{},  0);
-    run_prime(std::integral_constant<std::uint64_t, COEFF_MODULI[1]>{},
-              std::integral_constant<std::uint64_t, LO_C1>{},
-              std::false_type{}, 1);
-    run_prime(std::integral_constant<std::uint64_t, COEFF_MODULI[2]>{},
-              std::integral_constant<std::uint64_t, LO_C2>{},
-              std::false_type{}, 2);
-    run_prime(std::integral_constant<std::uint64_t, COEFF_MODULI[3]>{},
-              std::integral_constant<std::uint64_t, LO_C3>{},
-              std::true_type{},  3);
+    run_prime.template operator()<COEFF_MODULI[0], PSM_C[0], true >(0);
+    run_prime.template operator()<COEFF_MODULI[1], PSM_C[1], false>(1);
+    run_prime.template operator()<COEFF_MODULI[2], PSM_C[2], false>(2);
+    run_prime.template operator()<COEFF_MODULI[3], PSM_C[3], true >(3);
     return out;
 }
 

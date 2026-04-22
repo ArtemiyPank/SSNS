@@ -83,4 +83,14 @@ constexpr std::array<std::uint64_t, NUM_PRIMES> COEFF_MODULI = {
 // that want to assert "this prime fits in N bits".
 constexpr std::array<int, NUM_PRIMES> COEFF_MOD_BIT_SIZES = {60, 40, 40, 60};
 
+// Pseudo-Mersenne offsets: q_i = 2^K_i - PSM_C[i] where K_i = bit_size.
+// All four primes are 2^K minus a small constant (< 2^21), enabling fast
+// modular reduction via mul_mod_psm{40,60} in modarith.hpp.
+constexpr std::array<std::uint64_t, NUM_PRIMES> PSM_C = {
+    (std::uint64_t{1} << 60) - COEFF_MODULI[0],   // 16383
+    (std::uint64_t{1} << 40) - COEFF_MODULI[1],   // 147455
+    (std::uint64_t{1} << 40) - COEFF_MODULI[2],   // 737279
+    (std::uint64_t{1} << 60) - COEFF_MODULI[3],   // 98303
+};
+
 }  // namespace ssns::ckks
