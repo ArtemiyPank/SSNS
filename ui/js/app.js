@@ -184,8 +184,6 @@ async function boot() {
 function bindRangeOutputs() {
     const ranges = els.configForm.querySelectorAll('input[type="range"]');
     ranges.forEach(r => {
-        const out = els.configForm.querySelector(`output[for="${r.id}"]`);
-        if (!out) return;
         const fmt = (val) => {
             // Float-stepped sliders need decimal preservation.
             if (r.step.includes(".")) {
@@ -194,9 +192,35 @@ function bindRangeOutputs() {
             }
             return String(val);
         };
-        const update = () => { out.value = fmt(r.value); };
-        r.addEventListener("input", update);
-        update();
+
+        // Bidirectional sync: slider ⇄ number input (id = `${range_id}_num`).
+        const num = document.getElementById(`${r.id}_num`);
+        if (num) {
+            // Slider → number: keep number input in sync as user drags.
+            r.addEventListener("input", () => { num.value = fmt(r.value); });
+            // Number → slider: clamp into slider range, snap to step.
+            // The number input has a wider min/max than the slider so users
+            // can type values outside the slider bounds (e.g. epochs > 30000)
+            // — the slider will sit at its endpoint but the form submit uses
+            // num.value directly via the underlying name= attribute.
+            num.addEventListener("input", () => {
+                const v = parseFloat(num.value);
+                if (Number.isFinite(v)) {
+                    r.value = String(v);
+                    r.dispatchEvent(new Event("change", { bubbles: true }));
+                }
+            });
+            // Initial sync.
+            num.value = fmt(r.value);
+        }
+
+        // Legacy: any <output for="ID"> still gets the value too.
+        const out = els.configForm.querySelector(`output[for="${r.id}"]`);
+        if (out) {
+            const update = () => { out.value = fmt(r.value); };
+            r.addEventListener("input", update);
+            update();
+        }
     });
 
     // Derived: output_dim = output_clusters * cluster_size.
@@ -248,28 +272,35 @@ function bindControls() {
     els.stressForm.addEventListener("submit", onStressRun);
 }
 
+// Prefer the typed-in number input if present (it can hold values outside
+// the slider's range, e.g. epochs > 30000); fall back to the slider value.
+function paramVal(id) {
+    const num = document.getElementById(`${id}_num`);
+    if (num && num.value !== "") return num.value;
+    return els.configForm.elements[id].value;
+}
+
 function readConfig() {
     // Build the JSON payload for /api/run_training.  S_input is mirrored
     // from T_input so both networks see the same X, per protocol design.
-    const f = els.configForm.elements;
-    const T_input = parseInt(f.T_input.value, 10);
-    const cluster_size = parseInt(f.cluster_size.value, 10);
-    const output_clusters = parseInt(f.output_clusters.value, 10);
+    const T_input         = parseInt  (paramVal("T_input"),         10);
+    const cluster_size    = parseInt  (paramVal("cluster_size"),    10);
+    const output_clusters = parseInt  (paramVal("output_clusters"), 10);
     return {
         T_input,
-        T_hidden:       parseInt(f.T_hidden.value, 10),
+        T_hidden:       parseInt  (paramVal("T_hidden"),       10),
         S_input:        T_input,
-        S_hidden:       parseInt(f.S_hidden.value, 10),
+        S_hidden:       parseInt  (paramVal("S_hidden"),       10),
         output_dim:     output_clusters * cluster_size,
         cluster_size,
-        batch_size:     parseInt(f.batch_size.value, 10),
-        epochs:         parseInt(f.epochs.value, 10),
-        dz:             parseFloat(f.dz.value),
-        lr_max:         parseFloat(f.lr_max.value),
-        warmup_frac:    parseFloat(f.warmup_frac.value),
-        samples_to_log: parseInt(f.samples_to_log.value, 10),
-        snapshot_count: parseInt(f.snapshot_count.value, 10),
-        use_fhe:        !!f.use_fhe.checked,
+        batch_size:     parseInt  (paramVal("batch_size"),     10),
+        epochs:         parseInt  (paramVal("epochs"),         10),
+        dz:             parseFloat(paramVal("dz")),
+        lr_max:         parseFloat(paramVal("lr_max")),
+        warmup_frac:    parseFloat(paramVal("warmup_frac")),
+        samples_to_log: parseInt  (paramVal("samples_to_log"), 10),
+        snapshot_count: parseInt  (paramVal("snapshot_count"), 10),
+        use_fhe:        !!els.configForm.elements.use_fhe.checked,
     };
 }
 
@@ -351,6 +382,13 @@ function applyFhePresetVariant(epochs, label, expectedYield) {
         if (!el) continue;
         el.value = String(val);
         el.dispatchEvent(new Event("input", { bubbles: true }));
+        // Mirror to the matching number input so numeric values outside
+        // slider range still apply (e.g. epochs=400 if slider min was 100).
+        const num = document.getElementById(`${name}_num`);
+        if (num) {
+            num.value = String(val);
+            num.dispatchEvent(new Event("input", { bubbles: true }));
+        }
     }
     const fhe = els.configForm.elements.use_fhe;
     if (fhe) {

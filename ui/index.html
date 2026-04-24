@@ -18,115 +18,123 @@
 <!-- 1. Configuration row.                                               -->
 <!-- =================================================================== -->
 <section class="config-section">
-    <form id="config-form" class="config-grid">
+    <form id="config-form">
 
-        <div class="param">
-            <label for="T_input">T_input</label>
-            <input type="range" id="T_input" name="T_input" min="2" max="256" step="2" value="64">
-            <output for="T_input" class="param-value mono">64</output>
-        </div>
+        <!-- ARCHITECTURE -->
+        <fieldset class="config-card">
+            <legend>Architecture</legend>
+            <div class="config-grid">
+                <div class="param">
+                    <label for="T_input">T_input</label>
+                    <input type="range"  id="T_input"     name="T_input"     min="2" max="256" step="2" value="64">
+                    <input type="number" id="T_input_num" class="param-num"  min="2" max="256" step="2" value="64">
+                </div>
+                <div class="param">
+                    <label for="T_hidden">T_hidden</label>
+                    <input type="range"  id="T_hidden"     name="T_hidden"     min="2" max="512" step="2" value="64">
+                    <input type="number" id="T_hidden_num" class="param-num"   min="2" max="512" step="2" value="64">
+                </div>
+                <div class="param">
+                    <label for="S_hidden">S_hidden</label>
+                    <input type="range"  id="S_hidden"     name="S_hidden"     min="4" max="1024" step="4" value="192">
+                    <input type="number" id="S_hidden_num" class="param-num"   min="4" max="1024" step="4" value="192">
+                </div>
+                <div class="param">
+                    <label for="output_clusters">output_clusters</label>
+                    <input type="range"  id="output_clusters"     name="output_clusters"     min="2" max="512" step="2" value="256">
+                    <input type="number" id="output_clusters_num" class="param-num"          min="2" max="512" step="2" value="256">
+                </div>
+                <div class="param">
+                    <label for="cluster_size">cluster_size</label>
+                    <input type="range"  id="cluster_size"     name="cluster_size"     min="1" max="15" step="1" value="5">
+                    <input type="number" id="cluster_size_num" class="param-num"       min="1" max="15" step="1" value="5">
+                </div>
+                <div class="param param-derived">
+                    <label>output_dim</label>
+                    <output id="output_dim_display" class="param-value mono">1280</output>
+                    <span class="hint">clusters × cluster_size</span>
+                </div>
+            </div>
+        </fieldset>
 
-        <div class="param">
-            <label for="T_hidden">T_hidden</label>
-            <input type="range" id="T_hidden" name="T_hidden" min="2" max="512" step="2" value="64">
-            <output for="T_hidden" class="param-value mono">64</output>
-        </div>
+        <!-- TRAINING -->
+        <fieldset class="config-card">
+            <legend>Training</legend>
+            <div class="config-grid">
+                <div class="param">
+                    <label for="batch_size">batch_size</label>
+                    <input type="range"  id="batch_size"     name="batch_size"     min="2" max="256" step="2" value="64">
+                    <input type="number" id="batch_size_num" class="param-num"     min="2" max="256" step="2" value="64">
+                </div>
+                <div class="param">
+                    <label for="epochs">epochs</label>
+                    <input type="range"  id="epochs"     name="epochs"     min="100" max="30000" step="100" value="10000">
+                    <input type="number" id="epochs_num" class="param-num" min="1"   max="100000" step="1"  value="10000">
+                </div>
+                <div class="param">
+                    <label for="dz">dz <span class="hint">dead zone</span></label>
+                    <input type="range"  id="dz"     name="dz"     min="0.01" max="0.49" step="0.01" value="0.03">
+                    <input type="number" id="dz_num" class="param-num" min="0.01" max="0.49" step="0.01" value="0.03">
+                </div>
+                <div class="param">
+                    <label for="lr_max">lr_max</label>
+                    <input type="range"  id="lr_max"     name="lr_max"     min="0.0001" max="0.05" step="0.0001" value="0.01">
+                    <input type="number" id="lr_max_num" class="param-num" min="0.0001" max="1.0"  step="0.0001" value="0.01">
+                </div>
+                <div class="param">
+                    <label for="warmup_frac">warmup_frac</label>
+                    <input type="range"  id="warmup_frac"     name="warmup_frac"     min="0" max="0.3" step="0.01" value="0.05">
+                    <input type="number" id="warmup_frac_num" class="param-num"     min="0" max="0.5" step="0.01" value="0.05">
+                </div>
+            </div>
+        </fieldset>
 
-        <div class="param">
-            <label for="S_hidden">S_hidden</label>
-            <input type="range" id="S_hidden" name="S_hidden" min="4" max="1024" step="4" value="192">
-            <output for="S_hidden" class="param-value mono">192</output>
-        </div>
+        <!-- ENCRYPTION -->
+        <fieldset class="config-card">
+            <legend>Encryption</legend>
+            <label class="param-checkbox">
+                <input type="checkbox" id="use_fhe" name="use_fhe">
+                <span>
+                    <strong>Use CKKS FHE on the wire</strong>
+                    <span class="hint">~20–50× slower; encrypts H, Y_pred client→server and grad_W2, error_hidden server→client every epoch</span>
+                </span>
+            </label>
+        </fieldset>
 
-        <div class="param">
-            <label for="output_clusters">output_clusters</label>
-            <input type="range" id="output_clusters" name="output_clusters" min="2" max="512" step="2" value="256">
-            <output for="output_clusters" class="param-value mono">256</output>
-        </div>
+        <!-- LOGGING -->
+        <fieldset class="config-card">
+            <legend>Logging</legend>
+            <div class="config-grid">
+                <div class="param">
+                    <label for="samples_to_log">samples per snapshot <span class="hint">≤ batch_size</span></label>
+                    <input type="range"  id="samples_to_log"     name="samples_to_log"     min="1" max="64" step="1" value="16">
+                    <input type="number" id="samples_to_log_num" class="param-num"         min="1" max="64" step="1" value="16">
+                </div>
+                <div class="param">
+                    <label for="snapshot_count">snapshots <span class="hint">frames over full run</span></label>
+                    <input type="range"  id="snapshot_count"     name="snapshot_count"     min="2" max="200" step="1" value="10">
+                    <input type="number" id="snapshot_count_num" class="param-num"         min="2" max="200" step="1" value="10">
+                </div>
+            </div>
+        </fieldset>
 
-        <div class="param">
-            <label for="cluster_size">cluster_size</label>
-            <input type="range" id="cluster_size" name="cluster_size" min="1" max="15" step="1" value="5">
-            <output for="cluster_size" class="param-value mono">5</output>
-        </div>
-
-        <div class="param param-derived">
-            <label>output_dim</label>
-            <output id="output_dim_display" class="param-value mono">1280</output>
-            <span class="hint">clusters × cluster_size</span>
-        </div>
-
-        <div class="param">
-            <label for="batch_size">batch_size</label>
-            <input type="range" id="batch_size" name="batch_size" min="2" max="256" step="2" value="64">
-            <output for="batch_size" class="param-value mono">64</output>
-        </div>
-
-        <div class="param">
-            <label for="epochs">epochs</label>
-            <input type="range" id="epochs" name="epochs" min="100" max="30000" step="100" value="10000">
-            <output for="epochs" class="param-value mono">10000</output>
-        </div>
-
-        <div class="param">
-            <label for="dz">dz (dead zone)</label>
-            <input type="range" id="dz" name="dz" min="0.01" max="0.49" step="0.01" value="0.03">
-            <output for="dz" class="param-value mono">0.03</output>
-        </div>
-
-        <div class="param">
-            <label for="lr_max">lr_max</label>
-            <input type="range" id="lr_max" name="lr_max" min="0.0001" max="0.05" step="0.0001" value="0.01">
-            <output for="lr_max" class="param-value mono">0.0100</output>
-        </div>
-
-        <div class="param">
-            <label for="warmup_frac">warmup_frac</label>
-            <input type="range" id="warmup_frac" name="warmup_frac" min="0" max="0.3" step="0.01" value="0.05">
-            <output for="warmup_frac" class="param-value mono">0.05</output>
-        </div>
-
-        <div class="config-section-break">
-            <span>Encryption</span>
-        </div>
-
-        <label class="param param-checkbox">
-            <input type="checkbox" id="use_fhe" name="use_fhe">
-            <span>
-                Use CKKS FHE on the wire
-                <span class="hint">~20-50× slower; encrypts H, Y_pred client→server and grad_W2, error_hidden server→client every epoch</span>
-            </span>
-        </label>
-
-        <div class="config-section-break">
-            <span>Logging</span>
-        </div>
-
-        <div class="param">
-            <label for="samples_to_log">samples per snapshot
-                <span class="hint">≤ batch_size</span></label>
-            <input type="range" id="samples_to_log" name="samples_to_log" min="1" max="64" step="1" value="16">
-            <output for="samples_to_log" class="param-value mono">16</output>
-        </div>
-
-        <div class="param">
-            <label for="snapshot_count">snapshots
-                <span class="hint">frames over full run</span></label>
-            <input type="range" id="snapshot_count" name="snapshot_count" min="2" max="200" step="1" value="10">
-            <output for="snapshot_count" class="param-value mono">10</output>
-        </div>
-
-        <div class="param param-action">
-            <div class="run-buttons">
-                <button type="button" id="preset-fhe-fast-btn" class="secondary" title="~5 min FHE training, ~1.5 shared bits/trial">FHE fast</button>
-                <button type="button" id="preset-fhe-btn"      class="secondary" title="~10 min FHE training, ~1.97 shared bits/trial">FHE preset</button>
-                <button type="button" id="preset-fhe-rich-btn" class="secondary" title="~15 min FHE training, ~2.07 shared bits/trial">FHE rich</button>
-                <button type="submit" id="run-btn" class="primary">Run Training</button>
-                <button type="button" id="stop-btn" class="secondary" hidden>Stop</button>
+        <!-- ACTIONS -->
+        <fieldset class="config-card config-card-actions">
+            <legend>Run</legend>
+            <div class="run-row">
+                <div class="preset-row">
+                    <button type="button" id="preset-fhe-fast-btn" class="secondary" title="~5 min FHE training, ~1.5 shared bits/trial">FHE fast</button>
+                    <button type="button" id="preset-fhe-btn"      class="secondary" title="~10 min FHE training, ~1.97 shared bits/trial">FHE preset</button>
+                    <button type="button" id="preset-fhe-rich-btn" class="secondary" title="~15 min FHE training, ~2.07 shared bits/trial">FHE rich</button>
+                </div>
+                <div class="action-row">
+                    <button type="submit" id="run-btn"  class="primary">▶  Run Training</button>
+                    <button type="button" id="stop-btn" class="danger" hidden>■  Stop</button>
+                </div>
             </div>
             <span id="run-progress" class="run-status mono" hidden></span>
-            <span id="run-status" class="run-status mono"></span>
-        </div>
+            <span id="run-status"   class="run-status mono"></span>
+        </fieldset>
 
     </form>
 </section>
