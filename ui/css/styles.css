@@ -85,112 +85,116 @@ html, body {
     50%      { opacity: 0.5; }
 }
 
-/* ---------- config row (minimal) ---------- */
+/* ---------- config row ---------- */
 .config-section {
-    background: var(--bg);
-    border-bottom: 1px solid var(--border-soft);
-    padding: 16px 20px;
+    background: var(--bg-elev);
+    border-bottom: 1px solid var(--border);
+    padding: 14px 18px 18px;
 }
 #config-form {
     display: flex;
     flex-direction: column;
-    gap: 22px;
+    gap: 14px;
 }
 
-/* No card chrome — just a subtle section title + thin top rule. */
+/* Sectioned cards: Architecture / Training / Encryption / Logging / Run */
 .config-card {
-    border: 0;
-    border-top: 1px solid var(--border-soft);
-    padding: 14px 0 0;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 16px 14px;
+    background: var(--bg);
     margin: 0;
 }
-.config-card:first-of-type { border-top: 0; padding-top: 0; }
 .config-card legend {
-    padding: 0;
-    margin-bottom: 10px;
-    color: var(--fg-dim);
-    font-size: 10px;
-    font-weight: 500;
+    padding: 0 8px;
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 1.4px;
-    float: none;
+    letter-spacing: 1.5px;
 }
-.config-card-actions { /* no extra background */ }
+.config-card-actions {
+    background: linear-gradient(0deg, color-mix(in srgb, var(--accent) 6%, var(--bg)), var(--bg));
+}
 
 .config-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-    gap: 16px 28px;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 18px 24px;
     align-items: end;
 }
 .param {
     display: grid;
-    grid-template-columns: 1fr 80px;
+    grid-template-columns: 1fr 88px;
     grid-template-rows: auto auto;
-    gap: 4px 10px;
+    gap: 6px 10px;
     align-items: center;
 }
 .param label {
     grid-column: 1 / 3;
     color: var(--fg-dim);
-    font-size: 11px;
-    letter-spacing: 0.3px;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
     display: flex;
-    align-items: baseline;
+    align-items: center;
     gap: 6px;
 }
 .param label .hint {
-    color: var(--fg-subtle);
+    text-transform: none;
+    letter-spacing: 0;
+    color: var(--fg-dim);
+    opacity: 0.7;
+    font-weight: normal;
     font-size: 10px;
 }
-/* Slider — quiet, slim, but with a visibly draggable thumb. */
+/* Bigger, easier-to-grab range sliders (24 px tall track + 18 px thumb). */
 .param input[type="range"] {
     grid-column: 1 / 2;
     width: 100%;
-    height: 20px;
+    height: 24px;
     margin: 0;
-    accent-color: var(--fg-dim);
+    accent-color: var(--accent);
     background: transparent;
     cursor: pointer;
 }
 .param input[type="range"]::-webkit-slider-runnable-track {
-    height: 2px;
+    height: 6px;
     background: var(--border);
-    border-radius: 1px;
+    border-radius: 3px;
 }
 .param input[type="range"]::-webkit-slider-thumb {
     -webkit-appearance: none;
-    width: 14px; height: 14px;
-    background: var(--fg);
-    border: 0;
+    width: 18px; height: 18px;
+    background: var(--accent);
+    border: 2px solid var(--bg);
     border-radius: 50%;
     margin-top: -6px;
     cursor: pointer;
 }
 .param input[type="range"]::-moz-range-track {
-    height: 2px;
+    height: 6px;
     background: var(--border);
-    border-radius: 1px;
+    border-radius: 3px;
 }
 .param input[type="range"]::-moz-range-thumb {
-    width: 14px; height: 14px;
-    background: var(--fg);
-    border: 0;
+    width: 18px; height: 18px;
+    background: var(--accent);
+    border: 2px solid var(--bg);
     border-radius: 50%;
     cursor: pointer;
 }
-/* Number input next to slider — borderless, only underline on focus. */
+/* Numeric input next to slider — type any value, syncs with the slider. */
 .param-num {
     grid-column: 2 / 3;
     width: 100%;
-    height: 24px;
-    padding: 2px 6px;
-    background: transparent;
+    height: 28px;
+    padding: 4px 6px;
+    background: var(--bg-elev);
     color: var(--fg);
-    border: 0;
-    border-bottom: 1px solid var(--border);
-    border-radius: 0;
-    font-family: var(--mono);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-family: ui-monospace, "Cascadia Code", Menlo, monospace;
     font-size: 13px;
     text-align: right;
     -moz-appearance: textfield;
@@ -199,7 +203,8 @@ html, body {
 .param-num::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 .param-num:focus {
     outline: none;
-    border-bottom-color: var(--fg);
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent);
 }
 .param-value {
     grid-column: 2 / 3;
@@ -211,31 +216,33 @@ html, body {
 .param-derived .param-value {
     grid-column: 1 / 2;
     text-align: left;
-    color: var(--fg);
-    font-weight: 500;
-    font-size: 14px;
+    color: var(--accent);
+    font-weight: 600;
+    font-size: 16px;
 }
 .param-derived .hint {
     grid-column: 2 / 3;
     text-align: right;
 }
 
-/* Encryption: minimal labelled checkbox, no card chrome. */
+/* Encryption: full-width clickable checkbox card. */
 .param-checkbox {
     display: flex;
-    align-items: flex-start;
-    gap: 10px;
-    padding: 0;
-    border: 0;
-    background: transparent;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg-elev);
     cursor: pointer;
     user-select: none;
 }
+.param-checkbox:hover { border-color: var(--accent); }
 .param-checkbox input[type="checkbox"] {
-    accent-color: var(--fg);
-    margin: 2px 0 0;
-    width: 16px;
-    height: 16px;
+    accent-color: var(--accent);
+    margin: 0;
+    width: 18px;
+    height: 18px;
     cursor: pointer;
 }
 .param-checkbox > span {
@@ -243,32 +250,26 @@ html, body {
     flex-direction: column;
     gap: 2px;
     color: var(--fg);
-    font-size: 12px;
-}
-.param-checkbox strong {
-    font-weight: 500;
+    font-size: 13px;
 }
 
-/* Run section: tight rows, restrained Stop. */
-.run-row { display: flex; flex-direction: column; gap: 8px; }
-.preset-row, .action-row { display: flex; gap: 8px; flex-wrap: wrap; }
+/* Run section: presets row + action row */
+.run-row { display: flex; flex-direction: column; gap: 10px; }
+.preset-row, .action-row { display: flex; gap: 10px; flex-wrap: wrap; }
 .preset-row button,
 .action-row button {
     flex: 1;
-    min-height: 32px;
-    font-size: 12px;
+    min-height: 40px;
+    font-size: 14px;
 }
-.action-row #run-btn   { font-weight: 500; }
+.action-row #run-btn   { font-weight: 600; }
 .action-row #stop-btn  {
-    flex: 0 0 110px;
-    background: transparent;
-    color: var(--bad);
-    border: 1px solid var(--bad);
+    flex: 0 0 140px;
+    background: var(--danger, #c0392b);
+    color: white;
+    border: 1px solid var(--danger, #c0392b);
 }
-.action-row #stop-btn:hover {
-    background: var(--bad);
-    color: var(--bg);
-}
+.action-row #stop-btn:hover { background: #e74c3c; border-color: #e74c3c; }
 .run-status {
     grid-column: 1 / 2;
     margin-top: 4px;
