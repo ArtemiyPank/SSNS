@@ -207,7 +207,10 @@ function bindRangeOutputs() {
                 const v = parseFloat(num.value);
                 if (Number.isFinite(v)) {
                     r.value = String(v);
-                    r.dispatchEvent(new Event("change", { bubbles: true }));
+                    // Use `input` (not `change`) so any listeners on the
+                    // slider's input event — e.g. syncDerivedValues for
+                    // output_dim — fire when the user types a number.
+                    r.dispatchEvent(new Event("input", { bubbles: true }));
                 }
             });
             // Initial sync.
