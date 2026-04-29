@@ -233,20 +233,31 @@ function bindRangeOutputs() {
 
     // samples_to_log is logically bounded by batch_size: rows beyond batch
     // get clipped server-side anyway. Mirror that constraint live in the UI.
-    const batch   = els.configForm.elements.batch_size;
-    const samples = els.configForm.elements.samples_to_log;
+    // Both the slider AND its paired number input must reflect the new
+    // upper bound (and the current value is clamped if it exceeds batch).
+    const batch     = els.configForm.elements.batch_size;
+    const batchNum  = document.getElementById("batch_size_num");
+    const samples   = els.configForm.elements.samples_to_log;
+    const samplesNum = document.getElementById("samples_to_log_num");
     const samplesOut = els.configForm.querySelector(
         'output[for="samples_to_log"]');
 
     function clampSamplesToBatch() {
-        const b = parseInt(batch.value, 10);
+        // Use the typed number-input value if present (it can hold values
+        // outside the slider's range); fall back to the slider.
+        const b = parseInt(paramVal("batch_size"), 10);
+        if (!Number.isFinite(b) || b < 1) return;
         samples.max = String(b);
-        if (parseInt(samples.value, 10) > b) {
+        if (samplesNum) samplesNum.max = String(b);
+        const currentSamples = parseInt(paramVal("samples_to_log"), 10);
+        if (Number.isFinite(currentSamples) && currentSamples > b) {
             samples.value = String(b);
+            if (samplesNum) samplesNum.value = String(b);
             if (samplesOut) samplesOut.value = String(b);
         }
     }
     batch.addEventListener("input", clampSamplesToBatch);
+    if (batchNum) batchNum.addEventListener("input", clampSamplesToBatch);
     clampSamplesToBatch();   // apply on first paint
 }
 
