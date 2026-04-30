@@ -63,13 +63,25 @@ export class LossChart {
             return padT + plotH * (1 - u);
         };
 
-        // Grid (4 horizontal lines).
+        // Grid (5 horizontal lines = 4 cells).  Tick marks at the same Y
+        // positions on the left axis double as label anchors.
+        const Y_TICKS = 5;        // 5 evenly-spaced labels on the Y axis
         ctx.strokeStyle = this.gridColor;
         ctx.lineWidth = 1;
         ctx.beginPath();
-        for (let i = 0; i <= 4; i++) {
-            const y = padT + (plotH * i / 4);
+        for (let i = 0; i < Y_TICKS; i++) {
+            const y = padT + (plotH * i / (Y_TICKS - 1));
             ctx.moveTo(padL, y); ctx.lineTo(W - padR, y);
+        }
+        ctx.stroke();
+
+        // Vertical grid lines (matching X tick positions).
+        const X_TICKS = 5;        // 5 epoch labels along the X axis
+        ctx.strokeStyle = this.gridColor;
+        ctx.beginPath();
+        for (let i = 0; i < X_TICKS; i++) {
+            const x = padL + (plotW * i / (X_TICKS - 1));
+            ctx.moveTo(x, padT); ctx.lineTo(x, H - padB);
         }
         ctx.stroke();
 
@@ -107,14 +119,42 @@ export class LossChart {
         ctx.arc(tx(last.epoch), ty(last.loss), 2.5, 0, Math.PI * 2);
         ctx.fill();
 
-        // Labels.
+        // ---- Tick labels ----
         ctx.fillStyle = this.labelColor;
-        ctx.font = "10px monospace";
-        const fmt = (v) => useLog ? v.toExponential(2) : v.toFixed(4);
-        ctx.fillText(fmt(lossMax),     6, padT + 8);
-        ctx.fillText(fmt(lossMin),     6, H - padB + 4);
-        ctx.fillText(`epoch ${xMin}`,  padL,                 H - 6);
-        ctx.fillText(`epoch ${xMax}`,  W - padR - 64,        H - 6);
-        if (useLog) ctx.fillText("(log)", W - padR - 32, padT + 8);
+        ctx.font = "10px var(--mono, monospace)";
+        const fmtLoss = (v) =>
+            useLog ? v.toExponential(2)
+                    : (Math.abs(v) >= 1000 || (Math.abs(v) < 1e-3 && v !== 0)
+                        ? v.toExponential(2)
+                        : v.toFixed(3));
+
+        // Y axis: one label per gridline (top→bottom = lossMax→lossMin).
+        ctx.textAlign = "right";
+        ctx.textBaseline = "middle";
+        for (let i = 0; i < Y_TICKS; i++) {
+            const t = i / (Y_TICKS - 1);          // 0..1, top to bottom
+            const y = padT + plotH * t;
+            const v = useLog
+                ? Math.pow(10,
+                    Math.log10(Math.max(lossMax, 1e-30)) * (1 - t)
+                  + Math.log10(Math.max(lossMin, 1e-30)) * t)
+                : (lossMax * (1 - t) + lossMin * t);
+            ctx.fillText(fmtLoss(v), padL - 4, y);
+        }
+
+        // X axis: 5 epoch ticks evenly spaced.
+        ctx.textAlign = "center";
+        ctx.textBaseline = "top";
+        for (let i = 0; i < X_TICKS; i++) {
+            const t = i / (X_TICKS - 1);
+            const x = padL + plotW * t;
+            const epoch = Math.round(xMin + (xMax - xMin) * t);
+            ctx.fillText(String(epoch), x, H - padB + 6);
+        }
+
+        // Reset alignment + corner annotations.
+        ctx.textAlign = "left";
+        ctx.textBaseline = "alphabetic";
+        if (useLog) ctx.fillText("(log y)", W - padR - 38, padT + 10);
     }
 }
