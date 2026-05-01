@@ -196,22 +196,37 @@ function bindRangeOutputs() {
         // Bidirectional sync: slider ⇄ number input (id = `${range_id}_num`).
         const num = document.getElementById(`${r.id}_num`);
         if (num) {
-            // Slider → number: keep number input in sync as user drags.
-            r.addEventListener("input", () => { num.value = fmt(r.value); });
-            // Number → slider: clamp into slider range, snap to step.
-            // The number input has a wider min/max than the slider so users
-            // can type values outside the slider bounds (e.g. epochs > 30000)
-            // — the slider will sit at its endpoint but the form submit uses
-            // num.value directly via the underlying name= attribute.
+            // Suppress the slider→num write-back while the user is actively
+            // typing in `num`.  Without this flag, typing "1" first lands on
+            // the slider as "2" (min/step clamp), the slider's `input` event
+            // then writes "2" back into the number input, and the user can
+            // never finish typing "16".
+            let numEditing = false;
+
+            r.addEventListener("input", () => {
+                if (numEditing) return;
+                num.value = fmt(r.value);
+            });
+            // Number → slider: drive the slider visually (will clamp to its
+            // own range/step), and notify any other input listeners (e.g.
+            // syncDerivedValues for output_dim).  We do NOT clamp `num.value`
+            // here — destructive validation runs on blur instead, so the
+            // user can finish typing multi-digit numbers.
             num.addEventListener("input", () => {
+                numEditing = true;
                 const v = parseFloat(num.value);
                 if (Number.isFinite(v)) {
                     r.value = String(v);
-                    // Use `input` (not `change`) so any listeners on the
-                    // slider's input event — e.g. syncDerivedValues for
-                    // output_dim — fire when the user types a number.
                     r.dispatchEvent(new Event("input", { bubbles: true }));
                 }
+                numEditing = false;
+            });
+            // On blur, restore a valid value if the field is empty / NaN
+            // (we never silently overwrite a parseable number, even if it
+            // sits outside the slider's range — paramVal() trusts `num`).
+            num.addEventListener("blur", () => {
+                const v = parseFloat(num.value);
+                if (!Number.isFinite(v)) num.value = fmt(r.value);
             });
             // Initial sync.
             num.value = fmt(r.value);
@@ -232,19 +247,18 @@ function bindRangeOutputs() {
     [oc, cs].forEach(el => el.addEventListener("input", syncDerivedValues));
 
     // samples_to_log is logically bounded by batch_size: rows beyond batch
-    // get clipped server-side anyway. Mirror that constraint live in the UI.
-    // Both the slider AND its paired number input must reflect the new
-    // upper bound (and the current value is clamped if it exceeds batch).
-    const batch     = els.configForm.elements.batch_size;
-    const batchNum  = document.getElementById("batch_size_num");
-    const samples   = els.configForm.elements.samples_to_log;
+    // get clipped server-side anyway.  Mirror that constraint, but only
+    // *after* the user finishes editing — never destructively while they
+    // are still typing (e.g. typing "16" should not clamp samples to 1
+    // when the in-progress value is "1").
+    const batch      = els.configForm.elements.batch_size;
+    const batchNum   = document.getElementById("batch_size_num");
+    const samples    = els.configForm.elements.samples_to_log;
     const samplesNum = document.getElementById("samples_to_log_num");
     const samplesOut = els.configForm.querySelector(
         'output[for="samples_to_log"]');
 
     function clampSamplesToBatch() {
-        // Use the typed number-input value if present (it can hold values
-        // outside the slider's range); fall back to the slider.
         const b = parseInt(paramVal("batch_size"), 10);
         if (!Number.isFinite(b) || b < 1) return;
         samples.max = String(b);
@@ -256,8 +270,10 @@ function bindRangeOutputs() {
             if (samplesOut) samplesOut.value = String(b);
         }
     }
-    batch.addEventListener("input", clampSamplesToBatch);
-    if (batchNum) batchNum.addEventListener("input", clampSamplesToBatch);
+    // Slider drag commits with `change` on release.  Number input commits
+    // with `blur` (focus loss) — the more natural "I'm done typing" signal.
+    batch.addEventListener("change", clampSamplesToBatch);
+    if (batchNum) batchNum.addEventListener("blur", clampSamplesToBatch);
     clampSamplesToBatch();   // apply on first paint
 }
 
