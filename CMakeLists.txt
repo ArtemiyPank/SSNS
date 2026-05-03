@@ -11,6 +11,13 @@ endif()
 
 add_compile_options(-Wall -Wextra -Wpedantic)
 
+# Phase 8: SSNS_USE_BLAS toggles between OpenBLAS cblas_dgemm and the in-tree
+# hand-written matmul kernel.  When ON (default for now), src/linalg/matrix.cpp
+# uses cblas_dgemm.  When OFF, it dispatches to the native kernel in
+# src/linalg/matmul_native.cpp and the OpenBLAS dependency is dropped.  The
+# academic deliverable requires the OFF path on the algorithmic core.
+option(SSNS_USE_BLAS "Use OpenBLAS cblas_dgemm for linalg::matmul" ON)
+
 find_package(OpenMP)
 if(OpenMP_CXX_FOUND)
     message(STATUS "Using OpenMP: ${OpenMP_CXX_VERSION}")
@@ -22,32 +29,37 @@ elseif(CMAKE_BUILD_TYPE STREQUAL "Debug")
     add_link_options(-fsanitize=address,undefined)
 endif()
 
-# OpenBLAS via runtime linkage; prototypes vendored in third_party/cblas_minimal.h.
-# find_library only matches lib<name>.so on Linux, so fall back to scanning for
-# the SONAME-versioned file when a -devel package (which provides the bare .so
-# symlink) is not installed.
-find_library(OPENBLAS_LIB
-    NAMES openblaso openblas blas
-    PATHS /lib64 /usr/lib64 /usr/lib /usr/lib/x86_64-linux-gnu)
+if(SSNS_USE_BLAS)
+    # OpenBLAS via runtime linkage; prototypes vendored in third_party/cblas_minimal.h.
+    # find_library only matches lib<name>.so on Linux, so fall back to scanning for
+    # the SONAME-versioned file when a -devel package (which provides the bare .so
+    # symlink) is not installed.
+    find_library(OPENBLAS_LIB
+        NAMES openblaso openblas blas
+        PATHS /lib64 /usr/lib64 /usr/lib /usr/lib/x86_64-linux-gnu)
 
-if(NOT OPENBLAS_LIB)
-    foreach(_candidate /lib64/libopenblaso.so.0
-                       /lib64/libopenblas.so.0
-                       /usr/lib64/libopenblaso.so.0
-                       /usr/lib64/libopenblas.so.0
-                       /usr/lib/x86_64-linux-gnu/libopenblas.so.0)
-        if(EXISTS "${_candidate}")
-            set(OPENBLAS_LIB "${_candidate}" CACHE FILEPATH "" FORCE)
-            break()
-        endif()
-    endforeach()
-endif()
+    if(NOT OPENBLAS_LIB)
+        foreach(_candidate /lib64/libopenblaso.so.0
+                           /lib64/libopenblas.so.0
+                           /usr/lib64/libopenblaso.so.0
+                           /usr/lib64/libopenblas.so.0
+                           /usr/lib/x86_64-linux-gnu/libopenblas.so.0)
+            if(EXISTS "${_candidate}")
+                set(OPENBLAS_LIB "${_candidate}" CACHE FILEPATH "" FORCE)
+                break()
+            endif()
+        endforeach()
+    endif()
 
-if(NOT OPENBLAS_LIB)
-    message(FATAL_ERROR "libopenblas/libblas not found on system. "
-                        "Install the runtime package (e.g. dnf install openblas-openmp).")
+    if(NOT OPENBLAS_LIB)
+        message(FATAL_ERROR "libopenblas/libblas not found on system. "
+                            "Install the runtime package (e.g. dnf install openblas-openmp).")
+    endif()
+    message(STATUS "Using BLAS: ${OPENBLAS_LIB}")
+else()
+    message(STATUS "SSNS_USE_BLAS=OFF — using in-tree native matmul kernel")
+    add_compile_definitions(SSNS_NO_BLAS)
 endif()
-message(STATUS "Using BLAS: ${OPENBLAS_LIB}")
 
 include_directories(${CMAKE_SOURCE_DIR}/third_party
                     ${CMAKE_SOURCE_DIR}/include)
@@ -64,7 +76,7 @@ if(SSNS_CORE_SOURCES)
     target_include_directories(ssns_core PUBLIC
         ${CMAKE_SOURCE_DIR}/include
         ${CMAKE_SOURCE_DIR}/third_party)
-    if(OPENBLAS_LIB)
+    if(SSNS_USE_BLAS AND OPENBLAS_LIB)
         target_link_libraries(ssns_core PUBLIC ${OPENBLAS_LIB})
     endif()
     # cpp-httplib (used by src/http/server.cpp) needs pthread on POSIX.
@@ -102,7 +114,7 @@ add_executable(ssns_tests ${SSNS_TEST_SOURCES})
 if(SSNS_CORE_SOURCES)
     target_link_libraries(ssns_tests PRIVATE ssns_core)
 endif()
-if(OPENBLAS_LIB AND NOT SSNS_CORE_SOURCES)
+if(SSNS_USE_BLAS AND OPENBLAS_LIB AND NOT SSNS_CORE_SOURCES)
     target_link_libraries(ssns_tests PRIVATE ${OPENBLAS_LIB})
 endif()
 
