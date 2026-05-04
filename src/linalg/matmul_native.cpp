@@ -16,6 +16,8 @@
 // difference is acceptable for double precision; tests assert this bound.
 #include <cstddef>
 #include <cstdint>
+#include <thread>
+#include <vector>
 
 #if defined(__x86_64__) || defined(_M_X64)
 #include <immintrin.h>
@@ -181,18 +183,21 @@ inline bool host_supports_avx2_fma() {
 
 }  // namespace
 
-void matmul_native(const double* A, const double* B, double* C,
-                   std::size_t M, std::size_t N, std::size_t K) {
-    // C is already zero on entry (Matrix::zeros is the only call site).
-    // Walk K-panels last so each (mc x nc) C-tile is reused across kc-tiles
-    // and stays hot in cache.
-    const bool use_avx2 = host_supports_avx2_fma();
-    for (std::size_t i0 = 0; i0 < M; i0 += M_BLOCK) {
-        const std::size_t mc = (i0 + M_BLOCK <= M) ? M_BLOCK : (M - i0);
+// Sequential matmul over a contiguous row slab of C: rows [i_lo, i_hi).
+// Each invocation owns its disjoint output range, so multiple workers can
+// run concurrently without synchronisation.  Reads of A are also disjoint
+// across workers (each takes only its own rows of A); reads of B are shared
+// (read-only).  C is the only writer for its slab.
+inline void matmul_row_slab(const double* A, const double* B, double* C,
+                            std::size_t i_lo, std::size_t i_hi,
+                            std::size_t N, std::size_t K, bool use_avx2) {
+    for (std::size_t i0 = i_lo; i0 < i_hi; i0 += M_BLOCK) {
+        const std::size_t mc = (i0 + M_BLOCK <= i_hi) ? M_BLOCK : (i_hi - i0);
         for (std::size_t j0 = 0; j0 < N; j0 += N_BLOCK) {
             const std::size_t nc = (j0 + N_BLOCK <= N) ? N_BLOCK : (N - j0);
             for (std::size_t k0 = 0; k0 < K; k0 += K_BLOCK) {
-                const std::size_t kc = (k0 + K_BLOCK <= K) ? K_BLOCK : (K - k0);
+                const std::size_t kc =
+                    (k0 + K_BLOCK <= K) ? K_BLOCK : (K - k0);
                 macro_tile(A + i0 * K + k0, K,
                            B + k0 * N + j0, N,
                            C + i0 * N + j0, N,
@@ -200,6 +205,68 @@ void matmul_native(const double* A, const double* B, double* C,
             }
         }
     }
+}
+
+// Parallelism threshold: below this many flop-equivalents (M*N*K), the
+// thread spin-up cost outweighs the speedup.  Tuned roughly to ~1ms
+// single-threaded work on a modern client core.
+constexpr std::size_t PARALLEL_FLOP_THRESHOLD = 1ULL << 19;  // 512K mults
+
+void matmul_native(const double* A, const double* B, double* C,
+                   std::size_t M, std::size_t N, std::size_t K) {
+    // C is already zero on entry (Matrix::zeros is the only call site).
+    const bool use_avx2 = host_supports_avx2_fma();
+    const std::size_t work = M * N * K;
+
+    // Small problems run sequentially; threading overhead dominates below
+    // ~512K multiply-adds.
+    if (work < PARALLEL_FLOP_THRESHOLD || M < 2 * MR) {
+        matmul_row_slab(A, B, C, 0, M, N, K, use_avx2);
+        return;
+    }
+
+    // Partition M into thread chunks aligned to MR (so each worker's slab
+    // boundary lines up with the microkernel; only the last worker may
+    // handle a non-MR-aligned tail).  Avoid creating more threads than there
+    // is work: cap at M / MR.
+    unsigned hw = std::thread::hardware_concurrency();
+    if (hw == 0) hw = 1;
+    std::size_t n_threads = static_cast<std::size_t>(hw);
+    const std::size_t max_workers_by_rows = (M + MR - 1) / MR;
+    if (n_threads > max_workers_by_rows) n_threads = max_workers_by_rows;
+    if (n_threads < 1) n_threads = 1;
+    if (n_threads == 1) {
+        matmul_row_slab(A, B, C, 0, M, N, K, use_avx2);
+        return;
+    }
+
+    // Even partition by MR-aligned chunks; the final worker absorbs any
+    // ragged remainder.
+    const std::size_t mr_blocks = (M + MR - 1) / MR;
+    const std::size_t blocks_per_worker = mr_blocks / n_threads;
+    const std::size_t blocks_remainder  = mr_blocks % n_threads;
+
+    std::vector<std::thread> workers;
+    workers.reserve(n_threads - 1);
+    std::size_t start_block = 0;
+    for (std::size_t t = 0; t < n_threads; ++t) {
+        const std::size_t this_blocks =
+            blocks_per_worker + (t < blocks_remainder ? 1 : 0);
+        const std::size_t i_lo = start_block * MR;
+        std::size_t i_hi = (start_block + this_blocks) * MR;
+        if (i_hi > M) i_hi = M;
+        start_block += this_blocks;
+        if (i_lo >= i_hi) continue;
+        if (t + 1 == n_threads) {
+            // Run the last slab inline on the calling thread to save one
+            // thread spawn / join.
+            matmul_row_slab(A, B, C, i_lo, i_hi, N, K, use_avx2);
+        } else {
+            workers.emplace_back(matmul_row_slab,
+                                 A, B, C, i_lo, i_hi, N, K, use_avx2);
+        }
+    }
+    for (auto& w : workers) w.join();
 }
 
 }  // namespace ssns::linalg
