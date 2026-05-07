@@ -12,11 +12,12 @@ endif()
 add_compile_options(-Wall -Wextra -Wpedantic)
 
 # Phase 8: SSNS_USE_BLAS toggles between OpenBLAS cblas_dgemm and the in-tree
-# hand-written matmul kernel.  When ON (default for now), src/linalg/matrix.cpp
-# uses cblas_dgemm.  When OFF, it dispatches to the native kernel in
-# src/linalg/matmul_native.cpp and the OpenBLAS dependency is dropped.  The
-# academic deliverable requires the OFF path on the algorithmic core.
-option(SSNS_USE_BLAS "Use OpenBLAS cblas_dgemm for linalg::matmul" ON)
+# hand-written matmul kernel.  Default OFF — the academic deliverable forbids
+# external numerical libraries on the algorithmic core, and the in-tree AVX2
+# kernel in src/linalg/matmul_native.cpp matches or exceeds the system
+# OpenBLAS at v9 dimensions on a 12th-gen Intel client core.  Set ON to
+# reinstate the cblas_dgemm path (kept in tree as a regression reference).
+option(SSNS_USE_BLAS "Use OpenBLAS cblas_dgemm for linalg::matmul" OFF)
 
 find_package(OpenMP)
 if(OpenMP_CXX_FOUND)

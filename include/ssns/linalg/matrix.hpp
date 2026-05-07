@@ -4,8 +4,9 @@
 // functions so the call sites read like math.
 //
 // Performance notes:
-//   * matmul calls cblas_dgemm — replaceable with a hand-written SIMD kernel
-//     in a later phase by switching the implementation file.
+//   * matmul dispatches to an in-tree AVX2 + std::thread kernel
+//     (src/linalg/matmul_native.cpp).  The legacy OpenBLAS cblas_dgemm
+//     path is reachable via -DSSNS_USE_BLAS=ON for regression bisection.
 //   * Other ops are simple element-wise loops; we let -O2 -march=native
 //     auto-vectorise.
 #ifndef SSNS_LINALG_MATRIX_HPP
