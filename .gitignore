@@ -31,3 +31,7 @@ compile_commands.json
 # Local data
 ui_data/
 *.log
+
+# Excluded from version control (kept on disk only)
+docs/
+tests/
