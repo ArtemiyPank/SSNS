@@ -1,19 +1,7 @@
-// In-tree double-precision matmul kernel.  Selected when the project is
-// built with -DSSNS_USE_BLAS=OFF.  Replaces OpenBLAS cblas_dgemm on the
-// algorithmic core (academic deliverable constraint).
-//
-// Layout
-//   * Outer driver tiles (M, N, K) at (M_BLOCK, N_BLOCK, K_BLOCK) for L2.
-//   * Inner microkernel: 6 rows x 8 cols, AVX2 + FMA, 12 ymm accumulators.
-//     Reads one A scalar broadcast + two B ymm vectors per FMA pair, so the
-//     k-loop body issues 12 FMAs against 3 loads — close to peak FMA
-//     throughput on Intel client cores.
-//   * Edge cases (M%6, N%8, missing AVX2 support) fall back to a scalar
-//     triple-loop computed against the same partial-tile geometry.
-//
-// Numerical contract: bit-for-bit it is NOT identical to the reference loop
-// (different summation order changes rounding).  Up to 1e-12 absolute
-// difference is acceptable for double precision; tests assert this bound.
+// in tree f64 matmul
+// no blas just our own kernel
+// avx2+fma microkernel inside cache tiles
+// not bit exact vs naive loop diff up to 1e-12 ok
 #include <cstddef>
 #include <cstdint>
 #include <thread>
@@ -30,28 +18,31 @@ namespace ssns::linalg {
 
 namespace {
 
-// L2-tile parameters.  Working set per K-panel:
-//   A_tile: M_BLOCK * K_BLOCK doubles  (64 * 128 * 8 = 64 KiB)
-//   B_tile: K_BLOCK * N_BLOCK doubles  (128 * 128 * 8 = 128 KiB)
-//   C_tile: M_BLOCK * N_BLOCK doubles  (64 * 128 * 8 = 64 KiB)
-// Sums to ~256 KiB, comfortably resident in the 1.25 MiB L2 of recent Intel
-// client cores while leaving room for the rest of the working set.
+// l2 tile sizes picked to fit working set in l2
 constexpr std::size_t M_BLOCK = 96;
 constexpr std::size_t N_BLOCK = 128;
 constexpr std::size_t K_BLOCK = 128;
 
-constexpr std::size_t MR = 6;   // microkernel rows
-constexpr std::size_t NR = 8;   // microkernel cols (= 2 ymm * 4 doubles)
+// register block for microkernel
+// 6x8 because avx2 has 16 ymm
+// 12 идут под аккумуляторы 4 под загрузки
+constexpr std::size_t MR = 6;   // rows
+constexpr std::size_t NR = 8;   // cols = 2 ymm * 4 doubles
 
 #if SSNS_HAS_X86_INTRIN
-// AVX2 6x8 microkernel.  Computes a single MR x NR tile of C += A_panel * B_panel
-// where A_panel is MR x kc (row-major, stride K) and B_panel is kc x NR
-// (row-major, stride N).  Accumulators stay in registers across the whole
-// kc-loop; C is loaded once at entry, stored once at exit.
+// avx2 6x8 kernel
+// C += A_panel * B_panel
+// accs stay in regs whole kc loop
+// k loop body 12 fmas vs 3 loads
+// тут именно 6x8 12 ymm под акк 4 под загрузки
+// arithmetic intensity 12 fma на 3 ymm load
 __attribute__((target("avx2,fma")))
 inline void microkernel_6x8(const double* A, std::size_t lda,
                             const double* B, std::size_t ldb,
                             double* C, std::size_t ldc, std::size_t kc) {
+    // load 6x8 of C into 12 ymm
+    // loadu unaligned safe
+    // C аккумулируется в регистрах не трогаем память в k-loop
     __m256d c00 = _mm256_loadu_pd(C + 0 * ldc + 0);
     __m256d c01 = _mm256_loadu_pd(C + 0 * ldc + 4);
     __m256d c10 = _mm256_loadu_pd(C + 1 * ldc + 0);
@@ -65,11 +56,20 @@ inline void microkernel_6x8(const double* A, std::size_t lda,
     __m256d c50 = _mm256_loadu_pd(C + 5 * ldc + 0);
     __m256d c51 = _mm256_loadu_pd(C + 5 * ldc + 4);
 
+    // основной k loop
+    // берём один срез B 8 doubles
+    // broadcast a[i,k] из 6 строк
+    // load B один раз потом 6 broadcasts + 12 fma
     for (std::size_t k = 0; k < kc; ++k) {
+        // load one k slice of B 8 doubles
         const __m256d b0 = _mm256_loadu_pd(B + k * ldb + 0);
         const __m256d b1 = _mm256_loadu_pd(B + k * ldb + 4);
 
+        // broadcast scalar A[i,k] into all 4 lanes
+        // broadcast a_ik в lane всех 4 элементов ymm
         const __m256d a0 = _mm256_broadcast_sd(A + 0 * lda + k);
+        // fma is mul+add in one op
+        // fma c += a*b за один такт ровно
         c00 = _mm256_fmadd_pd(a0, b0, c00);
         c01 = _mm256_fmadd_pd(a0, b1, c01);
 
@@ -94,6 +94,7 @@ inline void microkernel_6x8(const double* A, std::size_t lda,
         c51 = _mm256_fmadd_pd(a5, b1, c51);
     }
 
+    // single store back to C
     _mm256_storeu_pd(C + 0 * ldc + 0, c00);
     _mm256_storeu_pd(C + 0 * ldc + 4, c01);
     _mm256_storeu_pd(C + 1 * ldc + 0, c10);
@@ -109,9 +110,9 @@ inline void microkernel_6x8(const double* A, std::size_t lda,
 }
 #endif  // SSNS_HAS_X86_INTRIN
 
-// Scalar fallback for partial tiles (mr < MR or nr < NR) and for the
-// non-AVX2 build path.  Same C += A*B contract over an mr x nr region of
-// length kc.
+// scalar fallback
+// for partial tiles and no avx2 build
+// i k j order so a_ik hoisted out
 inline void microkernel_scalar(const double* A, std::size_t lda,
                                const double* B, std::size_t ldb,
                                double* C, std::size_t ldc, std::size_t kc,
@@ -128,14 +129,16 @@ inline void microkernel_scalar(const double* A, std::size_t lda,
     }
 }
 
-// Process one (M_BLOCK, K_BLOCK, N_BLOCK) tile of C in-place.  Assumes C is
-// already initialised to the previous accumulated value (zero on the first
-// call).  The driver below zeroes C up front and then sweeps k-tiles to add.
+// process one tile mc x nc x kc
+// full MR x NR blocks go to avx2
+// edges go to scalar fallback
+// хвосты по N справа и по M снизу через скаляр иначе UB на loadu
 inline void macro_tile(const double* A, std::size_t lda,
                        const double* B, std::size_t ldb,
                        double* C, std::size_t ldc,
                        std::size_t mc, std::size_t nc, std::size_t kc,
                        bool use_avx2) {
+    // main pass full MR x NR blocks
     std::size_t i = 0;
     for (; i + MR <= mc; i += MR) {
         std::size_t j = 0;
@@ -154,11 +157,13 @@ inline void macro_tile(const double* A, std::size_t lda,
             microkernel_scalar(A + i * lda, lda, B + j, ldb,
                                C + i * ldc + j, ldc, kc, MR, NR);
         }
+        // right tail along N
         if (j < nc) {
             microkernel_scalar(A + i * lda, lda, B + j, ldb,
                                C + i * ldc + j, ldc, kc, MR, nc - j);
         }
     }
+    // bottom tail along M all scalar
     if (i < mc) {
         const std::size_t mr = mc - i;
         std::size_t j = 0;
@@ -173,6 +178,8 @@ inline void macro_tile(const double* A, std::size_t lda,
     }
 }
 
+// true if cpu has avx2+fma
+// cheap cpuid check
 inline bool host_supports_avx2_fma() {
 #if SSNS_HAS_X86_INTRIN
     return __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma");
@@ -183,11 +190,10 @@ inline bool host_supports_avx2_fma() {
 
 }  // namespace
 
-// Sequential matmul over a contiguous row slab of C: rows [i_lo, i_hi).
-// Each invocation owns its disjoint output range, so multiple workers can
-// run concurrently without synchronisation.  Reads of A are also disjoint
-// across workers (each takes only its own rows of A); reads of B are shared
-// (read-only).  C is the only writer for its slab.
+// sequential matmul over rows [i_lo, i_hi)
+// disjoint output range so threads dont sync
+// reads of B shared and read only
+// порядок M-N-K чтобы B держался в L1 для каждого панели A
 inline void matmul_row_slab(const double* A, const double* B, double* C,
                             std::size_t i_lo, std::size_t i_hi,
                             std::size_t N, std::size_t K, bool use_avx2) {
@@ -207,28 +213,29 @@ inline void matmul_row_slab(const double* A, const double* B, double* C,
     }
 }
 
-// Parallelism threshold: below this many flop-equivalents (M*N*K), the
-// thread spin-up cost outweighs the speedup.  Tuned roughly to ~1ms
-// single-threaded work on a modern client core.
+// below this many flops thread spawn not worth it
 constexpr std::size_t PARALLEL_FLOP_THRESHOLD = 1ULL << 19;  // 512K mults
 
+// C = A*B row major MxK KxN MxN
+// threads rows of C if big enough
+// each worker owns disjoint C rows no contention
+// std::thread не openmp потому что хочется явный контроль
+// строки C disjoint между потоками не нужно sync
 void matmul_native(const double* A, const double* B, double* C,
                    std::size_t M, std::size_t N, std::size_t K) {
-    // C is already zero on entry (Matrix::zeros is the only call site).
+    // C is zero on entry
     const bool use_avx2 = host_supports_avx2_fma();
     const std::size_t work = M * N * K;
 
-    // Small problems run sequentially; threading overhead dominates below
-    // ~512K multiply-adds.
+    // small problems just go sequential
     if (work < PARALLEL_FLOP_THRESHOLD || M < 2 * MR) {
         matmul_row_slab(A, B, C, 0, M, N, K, use_avx2);
         return;
     }
 
-    // Partition M into thread chunks aligned to MR (so each worker's slab
-    // boundary lines up with the microkernel; only the last worker may
-    // handle a non-MR-aligned tail).  Avoid creating more threads than there
-    // is work: cap at M / MR.
+    // partition M into chunks aligned to MR
+    // last worker takes the tail
+    // cap threads at M/MR
     unsigned hw = std::thread::hardware_concurrency();
     if (hw == 0) hw = 1;
     std::size_t n_threads = static_cast<std::size_t>(hw);
@@ -240,8 +247,9 @@ void matmul_native(const double* A, const double* B, double* C,
         return;
     }
 
-    // Even partition by MR-aligned chunks; the final worker absorbs any
-    // ragged remainder.
+    // even partition by MR aligned chunks
+    // last worker eats the remainder
+    // выравнивание по MR чтобы микрокернел работал на полных 6-строчных панелях
     const std::size_t mr_blocks = (M + MR - 1) / MR;
     const std::size_t blocks_per_worker = mr_blocks / n_threads;
     const std::size_t blocks_remainder  = mr_blocks % n_threads;
@@ -258,8 +266,7 @@ void matmul_native(const double* A, const double* B, double* C,
         start_block += this_blocks;
         if (i_lo >= i_hi) continue;
         if (t + 1 == n_threads) {
-            // Run the last slab inline on the calling thread to save one
-            // thread spawn / join.
+            // last slab inline saves one spawn+join
             matmul_row_slab(A, B, C, i_lo, i_hi, N, K, use_avx2);
         } else {
             workers.emplace_back(matmul_row_slab,

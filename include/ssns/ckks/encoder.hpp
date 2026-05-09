@@ -1,27 +1,22 @@
-// CKKS canonical embedding: complex<double> slot vector ↔ Polynomial.
+// ckks canonical embedding
+// complex slot vector <-> Polynomial
 //
-// CKKS encodes a vector of N/2 complex numbers as a polynomial in
-// Z[X]/(X^N + 1) by evaluating the polynomial at the primitive 2N-th
-// roots of unity ζ^(2k+1), k = 0..N-1, where ζ = exp(πi/N).  Because we
-// require the polynomial to have real coefficients, the N evaluations come
-// in N/2 conjugate pairs, leaving N/2 complex degrees of freedom — these
-// are the "slots".
+// encodes N/2 complex numbers into Z[X]/(X^N + 1) by evaluating at primitive 2N-th roots
+// poly must have real coefs so N evals come in N/2 conjugate pairs
+// gives N/2 slots
 //
-// The encode pipeline:
-//   1. Mirror length-(N/2) complex slots to a length-N complex vector
-//      satisfying z_full[N-1-k] = conj(z_full[k]).
-//   2. Apply the inverse special-FFT (twist by ζ^(-k), N-point IFFT,
-//      twist by ζ^(-k)) to recover real coefficients m_j.
-//   3. Multiply by `scale`, round to nearest integer, lift into RNS form
-//      (one residue per CKKS prime).
+// encode pipeline
+//   1 mirror N/2 slots to length N with z_full[N-1-k] = conj(z_full[k])
+//   2 inverse special fft (twist by zeta^-k then ifft then twist again)
+//   3 multiply by scale round to int lift into rns
 //
-// Decode is the matched inverse: lift residues to signed integers via
-// CRT (centered representation), divide by scale, apply the special FFT
-// to recover slot values, take the first N/2 entries.
+// decode is the matched inverse
 //
-// FFT is implemented from scratch (Cooley-Tukey radix-2 on N points) — we
-// rely only on std::complex<double>.  Precision: N=8192, scale=2^40 leaves
-// O(N log N · 2^-52) relative round-off ≪ 1e-10 in the encoded slots.
+// важно: twist by zeta^-k и conjugate mirror это две части одного special fft
+// без twist получился бы стандартный dft не уважающий X^N+1
+// без mirror коэффициенты были бы комплексными а нам нужны real
+//
+// fft is plain radix 2 in place using std::complex<double>
 #pragma once
 
 #include <ssns/ckks/poly.hpp>
@@ -34,49 +29,40 @@ namespace ssns::ckks {
 
 class Encoder {
 public:
-    // Build the encoder.  Pre-computes the FFT twiddle tables and the
-    // ζ^k twist tables (ζ = primitive 2N-th root of unity in C).
+    // builds the encoder
+    // pre computes fft twiddles and zeta^k twist tables
     Encoder();
 
-    // Encode a slot vector of length POLY_DEGREE/2 into a polynomial.
-    // Throws std::invalid_argument if `z.size() != POLY_DEGREE/2`.
-    // `scale` controls the precision: bigger scale → smaller relative
-    // round-off but eats into the modulus budget faster.
+    // encode slot vector of length POLY_DEGREE/2 into a polynomial
+    // throws if z.size() != POLY_DEGREE/2
     Polynomial encode(const std::vector<std::complex<double>>& z, double scale) const;
 
-    // Decode a polynomial back into a slot vector of length POLY_DEGREE/2.
-    // Lifts each RNS coefficient to a signed integer (centered around 0)
-    // using Garner-style CRT, divides by scale, applies the special FFT.
+    // decode polynomial back into slots
+    // lifts each rns coef to signed int via garner crt divides by scale runs special fft
     //
-    // `level` controls how many RNS primes participate in the CRT lift.
-    // Defaults to NUM_PRIMES so callers using fresh ciphertexts / plaintexts
-    // see the existing API.  After `rescale` (Phase 6.4) the active level
-    // shrinks; pass the smaller `level` so the dropped residues — which are
-    // zeroed out by rescale — don't perturb the lift.  Must satisfy
-    // `1 <= level <= NUM_PRIMES`.
+    // level controls how many rns primes participate in the lift
+    // defaults to NUM_PRIMES
+    // after rescale active level shrinks pass that smaller level so dropped residues do not perturb the lift
+    // 1 <= level <= NUM_PRIMES
     std::vector<std::complex<double>> decode(const Polynomial& p,
                                              double scale,
                                              std::size_t level = NUM_PRIMES) const;
 
-    static constexpr std::size_t slot_count() { return POLY_DEGREE / 2; }
-
 private:
-    // Standard radix-2 Cooley-Tukey on a length-N vector.  In-place.
-    // `inverse=true` divides by N at the end.
+    // radix 2 fft in place
+    // inverse=true divides by N at the end
     void fft(std::vector<std::complex<double>>& a, bool inverse) const;
 
-    // Bit-reversal permutation used by both fft directions.
+    // bit reversal permutation used by both directions
     void bitreverse_permute(std::vector<std::complex<double>>& a) const;
 
-    // Pre-computed twist factors for the special FFT.
-    // zeta_pow_[k] = ζ^k where ζ = exp(πi/N), used in encode (decode is
-    // the conjugate).  Length N.
+    // pre computed twist factors
+    // zeta_pow_[k] = zeta^k where zeta = exp(pi*i/N)
+    // decode uses the conjugate
     std::vector<std::complex<double>> zeta_pow_;
     std::vector<std::complex<double>> zeta_pow_conj_;
 
-    // Pre-computed FFT twiddles (forward direction).  twiddle_[s+j] =
-    // exp(-2πi · j / (2s)) for the size-2s butterfly stage.  We index
-    // by stage during the loop.
+    // pre computed fft twiddles
     std::vector<std::complex<double>> twiddle_fwd_;
     std::vector<std::complex<double>> twiddle_inv_;
 };

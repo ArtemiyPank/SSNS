@@ -1,20 +1,14 @@
-// SSNS Teacher-Student synchronisation step — plaintext + FHE variants.
+// SSNS teacher student sync step plain and FHE variants
 //
-// Mirrors src/ssns_clean/training.py: sample X, teacher target, student
-// forward, server-side Feedback-Alignment gradient compute, client-side
-// Adam update.  The FHE variant additionally encrypts H + Y_pred before
-// the server compute and decrypts the gradients afterwards.
+// per call sample X get teacher target run student forward server FA grads client update
+// FHE variant encrypts H and Y_pred before server step then decrypts grads back
 //
-//   ┌───────────────── Wire-protocol invariants (FHE path) ─────────────────┐
-//   │  Client → Server   :  X (plaintext)                                   │
-//   │                       H_ct, Y_pred_ct (CKKS ciphertexts)              │
-//   │  Server → Client   :  grad_W2_ct, error_hidden_ct (CKKS ciphertexts)  │
-//   │                                                                       │
-//   │  The server function takes `const ServerKeys&` which has NO           │
-//   │  SecretKey field — it is structurally impossible for server code to   │
-//   │  decrypt a ciphertext.  Tests under [protocol][training][fhe][wire]   │
-//   │  exercise this end-to-end.                                            │
-//   └───────────────────────────────────────────────────────────────────────┘
+// wire protocol on FHE path:
+//   client -> server: X plain plus H_ct Y_pred_ct ciphertexts
+//   server -> client: grad_W2_ct error_hidden_ct ciphertexts
+//
+// ServerKeys has no SecretKey field server cannot decrypt by construction
+// tests under [protocol][training][fhe][wire] cover this
 #ifndef SSNS_PROTOCOL_TRAINING_HPP
 #define SSNS_PROTOCOL_TRAINING_HPP
 
@@ -44,68 +38,75 @@ struct StepResult {
     linalg::Matrix Y_pred;
     linalg::Matrix grad_W2;
     linalg::Matrix error_hidden;
-    double         loss;
+    double loss;
 };
 
-// One full epoch of plaintext synchronisation: fresh X each call, teacher
-// target, student forward, server gradient, client update.  `loss` is the
-// pre-update MSE between Y_pred and Y_true.
+// one plain sync step fresh X teacher target student forward server grad client update
+// loss is pre update MSE
 [[nodiscard]] StepResult clean_train_step(
-    nn::CleanClient&  client,
+    nn::CleanClient& client,
     const nn::CleanServer& server,
     std::size_t batch_size,
     std::size_t input_dim,
-    nn::Rng& rng);
+    nn::Rng& rng,
+    double bimodality_alpha = 0.0);
 
-// =========================================================================
-// FHE wire-protocol types — every cipher-bound message between client and
-// server is shaped by these structs.  Construction of either struct is
-// always done by the side that owns the relevant keys; the other side can
-// only consume them.
-// =========================================================================
+// plain step plus gaussian noise on grads
+// fakes CKKS error ~100x faster than real FHE
+// quick prescreen for configs noise_std=0 same as plain
+[[nodiscard]] StepResult clean_train_step_noisy(
+    nn::CleanClient& client,
+    const nn::CleanServer& server,
+    std::size_t batch_size,
+    std::size_t input_dim,
+    nn::Rng& rng,
+    double bimodality_alpha,
+    double noise_std);
 
-// Client→Server payload: input batch in plaintext (X is not secret — it's
-// fresh Gaussian noise per epoch, sampled by the client) plus per-scalar
-// CKKS ciphertexts of the student's hidden activations and outputs.
+// FHE wire types
+// every cipher message between client and server is one of these
+// always built by the side with the keys other side only reads
+
+// client -> server payload
+// X is plain (not secret fresh gaussian per epoch)
+// H_ct and Y_pred_ct per scalar ciphertexts
 struct ClientPayload {
     linalg::Matrix X;                            // [batch x input_dim]
-    std::vector<ckks::Ciphertext> H_ct;          // length = batch * H_cols
-    std::vector<ckks::Ciphertext> Y_pred_ct;     // length = batch * Y_cols
+    std::vector<ckks::Ciphertext> H_ct;          // batch * H_cols
+    std::vector<ckks::Ciphertext> Y_pred_ct;     // batch * Y_cols
     std::size_t H_cols;
     std::size_t Y_cols;
 };
 
-// Server→Client response: ONLY ciphertexts.  No plaintext side-channel.
+// server -> client response ciphertexts only
 struct ServerResponse {
-    std::vector<ckks::Ciphertext> grad_W2_ct;       // length = H_cols * Y_cols
-    std::vector<ckks::Ciphertext> error_hidden_ct;  // length = batch * H_cols
+    std::vector<ckks::Ciphertext> grad_W2_ct;       // H_cols * Y_cols
+    std::vector<ckks::Ciphertext> error_hidden_ct;  // batch * H_cols
     std::size_t H_cols;
     std::size_t Y_cols;
     std::size_t batch_size;
 };
 
-// Plaintext gradients after client-side decryption.
+// plain grads after client decrypt
 struct DecryptedGradients {
     linalg::Matrix grad_W2;       // [H_cols x Y_cols]
     linalg::Matrix error_hidden;  // [batch x H_cols]
 };
 
-// =========================================================================
-// Type-level key separation.
+// type level key separation
 //
-//   ClientKeys carries the SecretKey — only client code may hold it.
-//   ServerKeys explicitly OMITS the SecretKey — server code cannot decrypt.
+// ClientKeys carries SecretKey only client may hold it
+// ServerKeys leaves SecretKey out server cannot decrypt
 //
-// Both structs borrow the NTT cache + Encoder by const-pointer to avoid
-// expensive copies; the lifetime is tied to a long-lived ckks::Backend.
-// =========================================================================
+// both borrow NTT cache and Encoder by const ptr
+// pointers valid as long as backing ckks::Backend lives
 
 struct ClientKeys {
     const ckks::SecretKey* sk;                                 // borrow
     const ckks::PublicKey* pk;                                 // borrow
     const std::array<ckks::NTT, ckks::NUM_PRIMES>* ntts;       // borrow
     const ckks::Encoder* encoder;                              // borrow
-    const ckks::Polynomial* s_ntt;                             // borrow — cached NTT-form sk
+    const ckks::Polynomial* s_ntt;                             // borrow cached NTT sk
     double scale;
 };
 
@@ -113,26 +114,21 @@ struct ServerKeys {
     const ckks::PublicKey* pk;                                 // borrow
     const ckks::EvalKey* evk;                                  // borrow
     const std::array<ckks::NTT, ckks::NUM_PRIMES>* ntts;       // borrow
-    const ckks::Encoder* encoder;                              // borrow (encodes Y_true / B_FA — public)
+    const ckks::Encoder* encoder;                              // borrow
     double scale;
-    // Intentionally NO SecretKey — server code cannot construct one.
+    // SecretKey absent on purpose
 };
 
-// Convenience: split a fully populated Backend into the two views.  The
-// borrowing pointers stay valid as long as `backend` outlives the views.
+// split a populated Backend into the two views
+// borrowed pointers stay valid while backend outlives the views
 [[nodiscard]] ClientKeys make_client_keys(const ckks::Backend& backend);
 [[nodiscard]] ServerKeys make_server_keys(const ckks::Backend& backend);
 
-// =========================================================================
-// Three-phase FHE training step.
-// =========================================================================
+// three phase FHE training step
 
-// Phase 1 (client side, has SecretKey).
-//
-// Encrypts H and Y_pred per-scalar (broadcast across all POLY_DEGREE/2
-// slots).  The plaintext X is forwarded as-is.  Random noise for the
-// encryption is drawn from `fhe_rng` so the same seed yields identical
-// payloads — required for parity tests.
+// phase 1 client side has SecretKey
+// encrypts H and Y_pred per scalar value broadcast to all slots
+// X forwarded as plain encryption noise from fhe_rng so same seed gives same payload
 [[nodiscard]] ClientPayload client_encrypt(
     const linalg::Matrix& X,
     const linalg::Matrix& H,
@@ -140,46 +136,41 @@ struct ServerKeys {
     const ClientKeys& keys,
     std::mt19937_64& fhe_rng);
 
-// Phase 2 (server side — NO SecretKey).
+// phase 2 server side no SecretKey
+// computes FA grads homomorphically
+// inputs: client payload plus server's CleanServer plus public + eval keys via ServerKeys
+// output: ciphertexts only
 //
-// Computes the FA gradients homomorphically.  The server takes:
-//   - the client payload (plaintext X + ciphertexts of H, Y_pred)
-//   - its private nn::CleanServer (Teacher weights + B_FA)
-//   - the public/eval keys + NTTs/encoder via ServerKeys
-// and returns ONLY ciphertexts.
-//
-// Internally: error = (Y_pred − Y_true) * (1/batch); grad_W2 = H^T·error;
-// error_hidden = error·B_FA.  Y_true is computed locally from X +
-// Teacher; B_FA is encoded plaintext-side.  The function never decrypts
-// any input or intermediate value.
+// compute: error = (Y_pred - Y_true) * (1/batch)
+//          grad_W2 = H^T * error
+//          error_hidden = error * B_FA
+// Y_true computed locally from X and teacher B_FA encoded plain
+// never decrypts anything
 [[nodiscard]] ServerResponse server_compute_gradients(
     const ClientPayload& payload,
     const nn::CleanServer& server,
-    const ServerKeys& keys);
+    const ServerKeys& keys,
+    double bimodality_alpha = 0.0);
 
-// Phase 3 (client side, has SecretKey).
-//
-// Decrypts the server's response into plaintext matrices.  No mutation
-// of any nn::CleanClient state happens here — the caller chooses how
-// to consume the gradients (typically apply Adam).
+// phase 3 client side has SecretKey
+// decrypts response into plain matrices does not touch CleanClient state
+// caller decides what to do with the grads usually one update step
 [[nodiscard]] DecryptedGradients client_decrypt(
     const ServerResponse& response,
     const ClientKeys& keys);
 
-// =========================================================================
-// Composition: one full FHE training step.
-// =========================================================================
+// one full FHE training step
 //
-// Same observable behaviour as Python's `clean_train_step(use_fhe=True)`.
-// Internally it runs the three phases above plus the Adam update.  loss
-// is computed plaintext-side (Y_pred — Y_true MSE).
+// runs three phases plus update
+// loss computed plain side as MSE between Y_pred and Y_true
 [[nodiscard]] StepResult clean_train_step_fhe(
-    nn::CleanClient&  client,
+    nn::CleanClient& client,
     const nn::CleanServer& server,
     ckks::Backend& backend,
     std::size_t batch_size,
     std::size_t input_dim,
-    nn::Rng& rng);
+    nn::Rng& rng,
+    double bimodality_alpha = 0.0);
 
 }  // namespace ssns::protocol
 

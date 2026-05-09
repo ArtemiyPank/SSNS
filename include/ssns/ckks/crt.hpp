@@ -1,20 +1,18 @@
-// CRT (Chinese-Remainder) lift / center helpers for CKKS RNS coefficients.
+// crt lift and center helpers for rns coefficients
 //
-// A CKKS polynomial coefficient lives mod Q = Π q_i, but is stored as a
-// tuple of residues (one per prime).  Reconstructing the signed integer
-// requires Garner's algorithm to assemble the residues, plus a centering
-// step (values > Q/2 represent negative integers x − Q).
+// a ckks coefficient lives mod Q = product of q_i
+// stored as residues one per prime
+// to get the signed integer back we do garner mixed radix lift then center
+// values above Q/2 mean negative integer x - Q
 //
-// Q is on the order of 2^200, which doesn't fit in any native type, so we
-// use a 256-bit unsigned integer (`U256`) made of 4 uint64_t limbs.  Both
-// the encoder and the keygen tests need this, so we expose it here.
+// Q is roughly 2^200 so we use 256 bit unsigned (4 u64 limbs)
 //
-// API:
-//   U256 crt_lift(residues)        — assemble residues into x ∈ [0, Q).
-//   double crt_center_to_double(x) — center mod Q, return as signed double.
+// центрирование: ckks хранит signed как [0, Q) минус это всё что > Q/2
+// без центра negative coefs восстановятся как Q - tiny вместо -tiny
 //
-// The U256 type and Garner context are also exposed for tests that want
-// to inspect lifted values directly.
+// api
+//   U256 crt_lift(residues)        assemble residues into x in [0, Q)
+//   double crt_center_to_double(x) center mod Q return signed double
 #pragma once
 
 #include <ssns/ckks/params.hpp>
@@ -24,44 +22,26 @@
 
 namespace ssns::ckks {
 
-// 256-bit unsigned integer, little-endian limb layout.  Used to hold the
-// CRT-lifted coefficient before centering — Q ≈ 2^200, so 4 limbs are
-// plenty.
+// 256 bit unsigned little endian limbs
+// holds the lifted coefficient before centering
 struct U256 {
     std::uint64_t lo{0}, mid_lo{0}, mid_hi{0}, hi{0};
 };
 
-// In-place 256-bit add: a += b (wrapping).
-void u256_add(U256& a, const U256& b);
-
-// In-place 256-bit multiply by a 64-bit scalar: a *= m (wrapping).
-void u256_mul_u64(U256& a, std::uint64_t m);
-
-// Strict less-than comparison.
-bool u256_lt(const U256& a, const U256& b);
-
-// In-place 256-bit subtract: a -= b.  Caller must ensure a >= b.
-void u256_sub(U256& a, const U256& b);
-
-// Convert U256 to double (treating value as unsigned).
-double u256_to_double(const U256& a);
-
-// Lift a tuple of RNS residues r[i] = x mod q_i into x ∈ [0, Q).
+// lift residues into x in [0, Q)
 U256 crt_lift(const std::array<std::uint64_t, NUM_PRIMES>& r);
 
-// Level-aware CRT lift: only the first `level` primes participate.  The
-// reconstructed value lives in [0, Q_level) where Q_level = Π_{i<level} q_i.
-// Residues at indices ≥ level are ignored.  `level` must satisfy
-// `1 <= level <= NUM_PRIMES`.
+// level aware lift only first `level` primes participate
+// reconstructed value lives in [0, Q_level)
+// residues above level are ignored
+// 1 <= level <= NUM_PRIMES
 U256 crt_lift(const std::array<std::uint64_t, NUM_PRIMES>& r, std::size_t level);
 
-// Center a lifted U256 around 0 (mod Q) and return as signed double.
-// If x > Q/2 the value represents the negative integer x − Q.
+// center around 0 mod Q return signed double
+// if x > Q/2 then value is x - Q
 double crt_center_to_double(const U256& x);
 
-// Level-aware centering: x lives in [0, Q_level) where Q_level is the
-// product of the first `level` primes.  If x > Q_level/2 the value
-// represents x - Q_level.
+// level aware centering x lives in [0, Q_level)
 double crt_center_to_double(const U256& x, std::size_t level);
 
 }  // namespace ssns::ckks

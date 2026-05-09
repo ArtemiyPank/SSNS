@@ -1,14 +1,9 @@
-// Row-major dense double-precision matrix.  Forms the substrate for every
-// neural-net tensor in this project.  Storage is std::vector<double>; size
-// is fixed at construction (no resize).  matmul and transpose are free
-// functions so the call sites read like math.
-//
-// Performance notes:
-//   * matmul dispatches to an in-tree AVX2 + std::thread kernel
-//     (src/linalg/matmul_native.cpp).  The legacy OpenBLAS cblas_dgemm
-//     path is reachable via -DSSNS_USE_BLAS=ON for regression bisection.
-//   * Other ops are simple element-wise loops; we let -O2 -march=native
-//     auto-vectorise.
+// row major dense f64 matrix
+// base type for nn tensors
+// storage is std vector double shape fixed at ctor
+// matmul and transpose are free fns
+// matmul uses avx2 + threads no blas
+// other ops are plain loops compiler vectorises them
 #ifndef SSNS_LINALG_MATRIX_HPP
 #define SSNS_LINALG_MATRIX_HPP
 
@@ -20,14 +15,19 @@ namespace ssns::linalg {
 
 class Matrix {
 public:
+    // rows x cols storage uninit
     Matrix(std::size_t rows, std::size_t cols);
 
+    // rows x cols of zeros
     static Matrix zeros(std::size_t rows, std::size_t cols);
+    // rows x cols filled with value
     static Matrix full(std::size_t rows, std::size_t cols, double value);
+    // build from {{1,2},{3,4}}
     static Matrix from_rows(std::initializer_list<std::initializer_list<double>> rows);
 
-    // Element access.  Bounds checking is debug-only (relies on std::vector's
-    // operator[] in release; .at would force an extra branch in hot loops).
+    // element access no bounds check in release
+    // row major idx = r*cols + c
+    // строка непрерывна в памяти столбец идёт со страйдом cols_
     double& operator()(std::size_t r, std::size_t c)       { return storage_[r * cols_ + c]; }
     double  operator()(std::size_t r, std::size_t c) const { return storage_[r * cols_ + c]; }
 
@@ -37,7 +37,9 @@ public:
     [[nodiscard]] double*       data()       noexcept { return storage_.data(); }
     [[nodiscard]] const double* data() const noexcept { return storage_.data(); }
 
+    // *= k in place
     void scale_in_place(double k);
+    // sqrt of sum of squares
     [[nodiscard]] double frobenius_norm() const;
 
 private:
@@ -46,11 +48,15 @@ private:
     std::vector<double> storage_;
 };
 
-// Free-function operations.  Throws std::invalid_argument on dimension
-// mismatch; this mirrors how torch raises RuntimeError on shape mismatches.
+// free fn ops throw on shape mismatch
+
+// A*B goes through avx2 kernel
 [[nodiscard]] Matrix matmul(const Matrix& A, const Matrix& B);
+// transpose of A out of place
 [[nodiscard]] Matrix transpose(const Matrix& A);
+// A+B element wise
 [[nodiscard]] Matrix add(const Matrix& A, const Matrix& B);
+// A-B element wise
 [[nodiscard]] Matrix sub(const Matrix& A, const Matrix& B);
 
 }  // namespace ssns::linalg

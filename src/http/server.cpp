@@ -1,10 +1,9 @@
-// HTTP server implementation.  Each endpoint is a small free function
-// registered against an httplib::Server instance owned by the wrapper.
+// http server impl
+// each endpoint is a free fn bound to httplib::Server held by wrapper class
 //
-// Subprocess-spawn for /api/run_training uses POSIX fork()+execvp() so the
-// child can fully detach (setsid + close stdio + replace image), matching
-// what subprocess.Popen with start_new_session=True does in the Python
-// reference.
+// /api/run_training spawns subprocess with posix fork+execvp
+// Это нужно потому что system() не отдаёт pid, а нам нужно знать pid для последующего /api/stop_training
+// child detaches via setsid and redirects stdio to /dev/null before exec
 #include <ssns/http/server.hpp>
 
 #include <algorithm>
@@ -48,14 +47,14 @@ namespace fs = std::filesystem;
 
 // ----- shared helpers ------------------------------------------------------
 
+// reply with `{"detail": ...}` body and given status
 void send_error(httplib::Response& res, int status, const std::string& detail) {
     json body = {{"detail", detail}};
     res.status = status;
     res.set_content(body.dump(), "application/json");
 }
 
-// JSON read with retry (3 x 50ms backoff) on parse error.  Mirrors
-// _read_json_with_retry in app.py.
+// read json from path with up to 3 retries 50 ms backoff, tolerates torn read while another proc rewrites the file
 json read_json_with_retry(const fs::path& path,
                           int attempts = 3,
                           int backoff_ms = 50) {
@@ -87,6 +86,7 @@ json read_json_with_retry(const fs::path& path,
 
 // ----- static file serving -------------------------------------------------
 
+// pick mime from file ext, falls back to octet-stream
 std::string mime_for(const fs::path& p) {
     auto ext = p.extension().string();
     std::transform(ext.begin(), ext.end(), ext.begin(),
@@ -104,6 +104,7 @@ std::string mime_for(const fs::path& p) {
     return "application/octet-stream";
 }
 
+// slurp whole file into out, false on open fail
 bool read_file(const fs::path& p, std::string& out) {
     std::ifstream in(p, std::ios::binary);
     if (!in) return false;
@@ -113,7 +114,7 @@ bool read_file(const fs::path& p, std::string& out) {
     return true;
 }
 
-// Reject ".." traversal — only allow simple relative descent under ui_dir.
+// reject ".." traversal, only allow simple relative descent under ui_dir
 bool is_safe_subpath(const std::string& sub) {
     if (sub.empty()) return false;
     if (sub.find("..") != std::string::npos) return false;
@@ -123,7 +124,7 @@ bool is_safe_subpath(const std::string& sub) {
 
 // ----- /api/run_training subprocess spawn ----------------------------------
 
-// Fields required in the POST body.  Matches TrainingParams in app.py.
+// fields expected in POST body of /api/run_training
 struct TrainingParams {
     long T_input, T_hidden, S_input, S_hidden;
     long output_dim, cluster_size, batch_size, epochs;
@@ -131,9 +132,13 @@ struct TrainingParams {
     long samples_to_log = 20;
     long snapshot_count = 10;
     bool use_fhe = false;
+    double bimodality_alpha = 0.0;     // 0 disables (default)
+    double simulate_fhe_noise = 0.0;   // use_fhe=false + this >0 = plain + gaussian noise (fast proxy)
+    bool key_confirmation = false;     // when true append --key-confirmation N after training
+    long key_confirmation_trials = 10000;
 };
 
-// Returns nullopt + error string in `err` on missing/invalid field.
+// parse + validate POST body, on fail err describes missing or bad field returns false
 bool parse_training_params(const json& body, TrainingParams& out, std::string& err) {
     auto need_int = [&](const char* name, long& dst) -> bool {
         if (!body.contains(name)) {
@@ -195,6 +200,40 @@ bool parse_training_params(const json& body, TrainingParams& out, std::string& e
             err = "snapshot_count out of range [2,200]"; return false;
         }
     }
+    if (body.contains("bimodality_alpha")) {
+        if (!body["bimodality_alpha"].is_number()) {
+            err = "bimodality_alpha must be number"; return false;
+        }
+        out.bimodality_alpha = body["bimodality_alpha"].get<double>();
+        if (out.bimodality_alpha < 0.0 || out.bimodality_alpha > 5.0) {
+            err = "bimodality_alpha out of range [0,5]"; return false;
+        }
+    }
+    if (body.contains("simulate_fhe_noise")) {
+        if (!body["simulate_fhe_noise"].is_number()) {
+            err = "simulate_fhe_noise must be number"; return false;
+        }
+        out.simulate_fhe_noise = body["simulate_fhe_noise"].get<double>();
+        if (out.simulate_fhe_noise < 0.0 || out.simulate_fhe_noise > 10.0) {
+            err = "simulate_fhe_noise out of range [0, 10]"; return false;
+        }
+    }
+    if (body.contains("key_confirmation")) {
+        if (!body["key_confirmation"].is_boolean()) {
+            err = "key_confirmation must be bool"; return false;
+        }
+        out.key_confirmation = body["key_confirmation"].get<bool>();
+    }
+    if (body.contains("key_confirmation_trials")) {
+        if (!body["key_confirmation_trials"].is_number_integer()
+            && !body["key_confirmation_trials"].is_number_unsigned()) {
+            err = "key_confirmation_trials must be int"; return false;
+        }
+        out.key_confirmation_trials = body["key_confirmation_trials"].get<long>();
+        if (out.key_confirmation_trials < 1 || out.key_confirmation_trials > 1000000) {
+            err = "key_confirmation_trials out of range [1, 1000000]"; return false;
+        }
+    }
     if (body.contains("use_fhe")) {
         if (!body["use_fhe"].is_boolean()) {
             err = "use_fhe must be bool"; return false;
@@ -204,11 +243,9 @@ bool parse_training_params(const json& body, TrainingParams& out, std::string& e
     return true;
 }
 
-// Build argv list mirroring _PARAM_TO_CLI in app.py.  First entry is the
-// benchmark binary path itself (becomes argv[0]).  --output-path and
-// --status-path are forwarded so the subprocess writes to the SAME files
-// the server reads — otherwise the subprocess defaults to ui_data/...
-// relative to its CWD and progress / log are invisible to the API.
+// build argv vec for benchmark subproc
+// first entry is benchmark binary path becomes argv[0]
+// --output-path и --status-path форсим явно, иначе subprocess пишет в ui_data/... относительно своего CWD, и /api эти файлы не находит
 std::vector<std::string> build_cmd_argv(const fs::path& benchmark,
                                         const TrainingParams& p,
                                         const fs::path& output_path,
@@ -244,20 +281,32 @@ std::vector<std::string> build_cmd_argv(const fs::path& benchmark,
     push("--output-path", output_path.string());
     push("--status-path", status_path.string());
 
-    a.emplace_back("--skip-fhe-bench");
+    if (p.bimodality_alpha > 0.0) {
+        std::ostringstream ss; ss << p.bimodality_alpha;
+        push("--bimodality-alpha", ss.str());
+    }
+    if (!p.use_fhe && p.simulate_fhe_noise > 0.0) {
+        std::ostringstream ss; ss << p.simulate_fhe_noise;
+        push("--simulate-fhe-noise", ss.str());
+    }
+    if (p.key_confirmation) {
+        push("--key-confirmation", std::to_string(p.key_confirmation_trials));
+    }
+
     if (p.use_fhe) a.emplace_back("--use-fhe");
     return a;
 }
 
 #if defined(__unix__) || defined(__APPLE__)
 
-// fork+execvp; child detaches via setsid and redirects stdio to /dev/null
-// before exec.  Returns child pid on success, -1 on fork failure.
+// spawn argv[0] detached via fork+execvp
+// child runs setsid and redirects stdio to /dev/null before exec
+// returns child pid or -1 if fork failed
 pid_t spawn_detached(const std::vector<std::string>& argv) {
     if (argv.empty()) return -1;
 
-    // Avoid zombies: install SIG_IGN for SIGCHLD on first call.  Children
-    // will be auto-reaped by the kernel.  Idempotent + harmless.
+    // avoid zombies, install SIG_IGN for SIGCHLD on first call so kids get auto reaped
+    // idempotent and harmless
     static bool sigchld_installed = false;
     if (!sigchld_installed) {
         struct sigaction sa{};
@@ -271,7 +320,7 @@ pid_t spawn_detached(const std::vector<std::string>& argv) {
     pid_t pid = fork();
     if (pid < 0) return -1;
     if (pid == 0) {
-        // Child.
+        // child
         setsid();
         int dn = ::open("/dev/null", O_RDWR);
         if (dn >= 0) {
@@ -280,7 +329,7 @@ pid_t spawn_detached(const std::vector<std::string>& argv) {
             dup2(dn, STDERR_FILENO);
             if (dn > STDERR_FILENO) ::close(dn);
         }
-        // Build argv as char* array.
+        // build argv as char* array for execvp
         std::vector<char*> raw;
         raw.reserve(argv.size() + 1);
         for (auto& s : argv) {
@@ -303,7 +352,7 @@ pid_t spawn_detached(const std::vector<std::string>&) {
 
 // ----- /api/manual_test + /api/stress_test helpers -------------------------
 
-// Convert nested JSON 2-D array to ssns::linalg::Matrix.
+// nested 2d json array -> ssns::linalg::Matrix
 ssns::linalg::Matrix matrix_from_json(const json& m) {
     if (!m.is_array() || m.empty() || !m.front().is_array()) {
         throw std::runtime_error("expected 2-D JSON array");
@@ -331,14 +380,15 @@ struct LoadedPair {
     ssns::linalg::Matrix W2_S;
 };
 
-// Mirror of app.py::_load_trained_pair.  Throws an HTTP-friendly status code
-// via std::pair<int,std::string> packaged into a runtime_error tagged with a
-// numeric prefix; we unpack via parse_status().  Keeps the call sites tiny.
+// carries http status through normal exception flow so handler stays small
 struct HTTPException : public std::runtime_error {
     int status;
     HTTPException(int s, const std::string& m) : std::runtime_error(m), status(s) {}
 };
 
+// load latest snapshot of {Teacher Student} from data_path
+// throws HTTPException with 404/409/503 on common fail modes
+// Валидируем до построения Teacher: иначе пустой/корявый файл даёт 500 уже внутри ssns::nn::Teacher, именно поэтому здесь так много 409
 LoadedPair load_trained_pair(const fs::path& data_path) {
     if (!fs::exists(data_path)) {
         throw HTTPException(404,
@@ -359,7 +409,7 @@ LoadedPair load_trained_pair(const fs::path& data_path) {
     const auto& snaps = data["snapshots"];
     if (!snaps.is_array() || snaps.empty()) {
         throw HTTPException(409,
-            "Training log has no snapshots yet — wait for training to "
+            "Training log has no snapshots yet - wait for training to "
             "produce at least one snapshot.");
     }
     if (!meta.contains("S_input") || meta["S_input"].is_null()) {
@@ -367,7 +417,7 @@ LoadedPair load_trained_pair(const fs::path& data_path) {
     }
     if (!meta.contains("teacher_seed") || meta["teacher_seed"].is_null()) {
         throw HTTPException(409,
-            "Training log lacks 'teacher_seed' metadata — re-run training "
+            "Training log lacks 'teacher_seed' metadata - re-run training "
             "with the latest benchmark.");
     }
     const std::size_t T_input    = meta.at("T_input").get<std::size_t>();
@@ -382,7 +432,7 @@ LoadedPair load_trained_pair(const fs::path& data_path) {
     return LoadedPair{meta, last, std::move(teacher), std::move(W1_S), std::move(W2_S)};
 }
 
-// 1-D summary stats — mean / std (population) / min / max / median.
+// 1d summary stats mean std (population) min max median
 json summary(const std::vector<double>& v) {
     if (v.empty()) {
         return json{{"mean",0.0},{"std",0.0},{"min",0.0},{"max",0.0},{"median",0.0}};
@@ -392,13 +442,13 @@ json summary(const std::vector<double>& v) {
     const double mean = sum / static_cast<double>(v.size());
     double var = 0.0;
     for (double x : v) var += (x - mean) * (x - mean);
-    var /= static_cast<double>(v.size());     // population (unbiased=False)
+    var /= static_cast<double>(v.size());     // population variance unbiased=False
     auto sorted = v;
     std::sort(sorted.begin(), sorted.end());
     double median;
     const std::size_t n = sorted.size();
     if (n % 2 == 1) median = sorted[n / 2];
-    // PyTorch's tensor.median picks the lower middle for even n; mirror that.
+    // for even n pick lower middle to match torch.tensor.median
     else            median = sorted[n / 2 - 1];
     return json{
         {"mean",   mean},
@@ -409,7 +459,7 @@ json summary(const std::vector<double>& v) {
     };
 }
 
-// Fixed-bin histogram to match _hist_counts in app.py.
+// fixed bin histogram returns `{"bins": [edges...], "counts": [...]}`
 json hist_counts(const std::vector<long>& values, int n_bins,
                  long lo, long hi) {
     if (values.empty()) {
@@ -433,8 +483,7 @@ json hist_counts(const std::vector<long>& values, int n_bins,
     return json{{"bins", edges}, {"counts", counts}};
 }
 
-// Apply Student forward Y = sigmoid(ReLU(X @ W1) @ W2) row-by-row to a
-// batched X with shape [n, S_input].  Uses the C++ matrix kernels.
+// run student forward Y = sigmoid(ReLU(X @ W1) @ W2) on batched X shape [n, S_input], uses c++ matrix kernels
 ssns::linalg::Matrix student_forward_sigmoid(
     const ssns::linalg::Matrix& X,
     const ssns::linalg::Matrix& W1,
@@ -446,6 +495,7 @@ ssns::linalg::Matrix student_forward_sigmoid(
     return ssns::nn::sigmoid(raw);
 }
 
+// teacher forward Y = sigmoid(Teacher(X))
 ssns::linalg::Matrix teacher_forward_sigmoid(
     const ssns::nn::Teacher& teacher,
     const ssns::linalg::Matrix& X)
@@ -456,6 +506,7 @@ ssns::linalg::Matrix teacher_forward_sigmoid(
 
 // ----- endpoint handlers ---------------------------------------------------
 
+// GET / serves ui/index.html or 404 if missing
 void handle_root(const ServerConfig& cfg, const httplib::Request&, httplib::Response& res) {
     auto index = cfg.ui_dir / "index.html";
     if (!fs::exists(index)) {
@@ -473,9 +524,11 @@ void handle_root(const ServerConfig& cfg, const httplib::Request&, httplib::Resp
     res.set_content(body, "text/html; charset=utf-8");
 }
 
+// GET /ui/<path> serves a static file rooted at ui_dir
+// rejects unsafe paths (".." traversal leading /)
 void handle_static(const ServerConfig& cfg, const httplib::Request& req,
                    httplib::Response& res) {
-    // matches.size() == 2: full match + capture group
+    // matches.size() == 2 means full match + one capture group
     if (req.matches.size() < 2) {
         send_error(res, 400, "missing static path");
         return;
@@ -499,6 +552,8 @@ void handle_static(const ServerConfig& cfg, const httplib::Request& req,
     res.set_content(body, mime_for(p));
 }
 
+// GET /api/training_data returns training log json
+// 404 if missing, 503 if currently rewritten, else 200
 void handle_get_training_data(const ServerConfig& cfg,
                               const httplib::Request&, httplib::Response& res) {
     if (!fs::exists(cfg.training_data_path)) {
@@ -516,6 +571,8 @@ void handle_get_training_data(const ServerConfig& cfg,
     }
 }
 
+// GET /api/training_status returns live status json
+// 404 if missing, 503 if currently rewritten, else 200
 void handle_get_training_status(const ServerConfig& cfg,
                                 const httplib::Request&, httplib::Response& res) {
     if (!fs::exists(cfg.training_status_path)) {
@@ -532,6 +589,8 @@ void handle_get_training_status(const ServerConfig& cfg,
     }
 }
 
+// POST /api/run_training validates body spawns ssns-benchmark detached returns 200 + `{pid params cmd}`
+// 422 on bad body 500 if benchmark binary missing
 void handle_post_run_training(const ServerConfig& cfg,
                               const httplib::Request& req, httplib::Response& res) {
     json body;
@@ -547,10 +606,9 @@ void handle_post_run_training(const ServerConfig& cfg,
         send_error(res, 422, err);
         return;
     }
-    // Pre-fork existence check — if the benchmark binary doesn't exist or
-    // isn't executable, fail loudly with a 500 instead of silently leaving
-    // the user staring at "epoch 0 / N, elapsed 0.0s" forever (the child
-    // would die on execvp ENOENT and the parent never notices).
+    // pre fork existence check
+    // if benchmark binary missing or not exec we return 500 right away
+    // else child dies on execvp ENOENT, parent doesnt notice, user stares at "epoch 0 / N" forever
     {
         std::error_code ec;
         const bool ok =
@@ -570,7 +628,8 @@ void handle_post_run_training(const ServerConfig& cfg,
                                cfg.training_data_path,
                                cfg.training_status_path);
 
-    // Best-effort placeholder.  app.py wraps in try/except OSError.
+    // best effort write of running:true placeholder
+    // failures swallowed, subproc overwrites file shortly
     try {
         ssns::io::write_starting_status(cfg.training_status_path, p.epochs);
     } catch (...) { /* swallow */ }
@@ -588,13 +647,10 @@ void handle_post_run_training(const ServerConfig& cfg,
     res.set_content(resp.dump(), "application/json");
 }
 
-// ---- /api/stop_training -------------------------------------------------
-//
-// Body: {"pid": <integer>}.  Validates that the pid belongs to a
-// "ssns-benchmark" process (best-effort check via /proc/<pid>/comm), then
-// sends SIGTERM.  Always re-writes training_status.json with running=false
-// + a "stopped":true marker so the frontend's poller settles cleanly even
-// if the child got SIGKILLed mid-write.
+// POST /api/stop_training body `{"pid": int}`
+// confirms pid is a benchmark via /proc then sends sigterm
+// always rewrites training_status json with running=false stopped=true so frontend poller settles even if child got sigkilled mid write
+// 422 on bad body 404 if pid not a benchmark 200 on success
 void handle_post_stop_training(const ServerConfig& cfg,
                                const httplib::Request& req, httplib::Response& res) {
     json body;
@@ -614,15 +670,14 @@ void handle_post_stop_training(const ServerConfig& cfg,
         return;
     }
 
-    // Sanity: confirm this pid points at a benchmark process.  We accept
-    // both /proc/<pid>/comm == "ssns-benchmark" and any cmdline containing
-    // the configured benchmark binary basename.
+    // sanity check confirm pid is a benchmark proc
+    // accept /proc/<pid>/comm == "ssns-benchmark" or any cmdline that contains the bin basename
     bool looks_like_benchmark = false;
     {
         std::ifstream comm_in("/proc/" + std::to_string(pid) + "/comm");
         std::string comm;
         if (comm_in && std::getline(comm_in, comm)) {
-            // Linux truncates comm to 15 chars; "ssns-benchmark" is 14 — fits.
+            // linux truncates comm to 15 chars, "ssns-benchmark" is 14, fits
             if (comm.find("ssns-benchmark") != std::string::npos) {
                 looks_like_benchmark = true;
             }
@@ -647,10 +702,8 @@ void handle_post_stop_training(const ServerConfig& cfg,
     int kill_rc = ::kill(pid, SIGTERM);
     int saved_errno = errno;
 
-    // Read the current status (if any) so we can preserve epoch/loss/elapsed
-    // values rather than zeroing them out.  All field reads are guarded
-    // against missing-key / type-mismatch exceptions so a corrupt status
-    // file can't take the endpoint down.
+    // read current status if any so we keep epoch/loss/elapsed values rather than zero them
+    // reads guarded against missing key + type mismatch so a corrupt status file cant take endpoint down
     json existing;
     try {
         std::ifstream in(cfg.training_status_path);
@@ -664,7 +717,7 @@ void handle_post_stop_training(const ServerConfig& cfg,
         return *it;
     };
 
-    // Format current UTC time as ISO-8601 with trailing Z.
+    // format current utc time as iso-8601 with trailing Z
     const auto now_t   = std::chrono::system_clock::now();
     const std::time_t tt = std::chrono::system_clock::to_time_t(now_t);
     std::tm tm_buf{}; gmtime_r(&tt, &tm_buf);
@@ -689,7 +742,7 @@ void handle_post_stop_training(const ServerConfig& cfg,
         }
         std::ofstream out(cfg.training_status_path);
         out << final_status.dump();
-    } catch (...) { /* swallow — kill already sent, response still valid */ }
+    } catch (...) { /* swallow kill already sent response is still valid */ }
 
     json resp = {
         {"status",  kill_rc == 0 ? "stopped" : "kill_failed"},
@@ -701,6 +754,9 @@ void handle_post_stop_training(const ServerConfig& cfg,
     res.set_content(resp.dump(), "application/json");
 }
 
+// POST /api/manual_test body `{"X": [...]}` length S_input
+// loads latest T+S snapshot runs both forwards on X extracts confident bits returns side by side bits + shared idx
+// 422 on bad body 404/409/503 if no usable training log
 void handle_post_manual_test(const ServerConfig& cfg,
                              const httplib::Request& req, httplib::Response& res) {
     json body;
@@ -748,9 +804,9 @@ void handle_post_manual_test(const ServerConfig& cfg,
     auto T_ext = ssns::protocol::extract_with_indices(Y_T, static_cast<int>(cluster), dz);
     auto S_ext = ssns::protocol::extract_with_indices(Y_S, static_cast<int>(cluster), dz);
 
-    // shared = sorted intersection of idx_T, idx_S; mismatches counts bit
-    // disagreements at shared indices.  Both index lists are produced in
-    // ascending order by extract_with_indices.
+    // shared is sorted intersection of idx_T and idx_S
+    // mismatches counts bit disagreements at shared idx
+    // both index lists already ascending from extract_with_indices
     std::vector<int> shared;
     int mismatches = 0;
     {
@@ -766,7 +822,7 @@ void handle_post_manual_test(const ServerConfig& cfg,
         }
     }
 
-    // Round the floats to 6 decimals to mirror app.py.
+    // round floats to 6 decimals before sending to ui
     auto round6 = [](double x) {
         return std::round(x * 1e6) / 1e6;
     };
@@ -793,6 +849,10 @@ void handle_post_manual_test(const ServerConfig& cfg,
     res.set_content(out.dump(), "application/json");
 }
 
+// POST /api/stress_test body `{"n_trials": int?, "seed": int?}`
+// runs N rand trials of T/S bit extraction
+// returns summary stats per trial shared bits histogram perfect match count total mm
+// 422 on bad body 404/409/503 if no usable training log
 void handle_post_stress_test(const ServerConfig& cfg,
                              const httplib::Request& req, httplib::Response& res) {
     json body;
@@ -924,9 +984,10 @@ void handle_post_stress_test(const ServerConfig& cfg,
 }  // anon namespace
 
 // ---------------------------------------------------------------------------
-// Server class.
+// Server class
 // ---------------------------------------------------------------------------
 
+// wire each route to its handler
 Server::Server(ServerConfig cfg)
     : cfg_(std::move(cfg)),
       srv_(std::make_unique<httplib::Server>())
@@ -935,7 +996,7 @@ Server::Server(ServerConfig cfg)
     s.Get("/", [this](const httplib::Request& q, httplib::Response& r){
         handle_root(cfg_, q, r);
     });
-    // Static files under /ui/*.  Capture group is the remainder.
+    // static files under /ui/* capture group is path remainder
     s.Get(R"(/ui/(.+))", [this](const httplib::Request& q, httplib::Response& r){
         handle_static(cfg_, q, r);
     });
@@ -964,23 +1025,18 @@ Server::~Server() {
 }
 
 void Server::listen(const std::string& host, int port) {
-    running_ = true;
     srv_->listen(host.c_str(), port);
-    running_ = false;
 }
 
 void Server::start_in_thread(const std::string& host, int port) {
     thread_ = std::thread([this, host, port]{
-        running_ = true;
         srv_->listen(host.c_str(), port);
-        running_ = false;
     });
 }
 
 void Server::stop() {
     if (srv_) srv_->stop();
     if (thread_.joinable()) thread_.join();
-    running_ = false;
 }
 
 }  // namespace ssns::http

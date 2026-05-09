@@ -12,9 +12,8 @@ namespace ssns::io {
 
 namespace {
 
-// Format a system_clock::time_point as ISO 8601 UTC with second precision,
-// e.g. "2026-04-29T13:45:00Z".  Uses gmtime_r / strftime — std::format's
-// chrono support is patchy across compilers in 2026 still.
+// time point to ISO 8601 UTC like 2026-04-29T13:45:00Z
+// std format chrono support still patchy in 2026
 std::string iso8601_utc(SystemTimePoint tp) {
     const auto t = std::chrono::system_clock::to_time_t(tp);
     std::tm tm{};
@@ -28,6 +27,7 @@ std::string iso8601_utc(SystemTimePoint tp) {
     return std::string(buf);
 }
 
+// dump json atomically write tmp then rename
 void atomic_write_json(const std::filesystem::path& path,
                        const nlohmann::json& payload) {
     std::filesystem::create_directories(path.parent_path());
@@ -38,14 +38,13 @@ void atomic_write_json(const std::filesystem::path& path,
         out << payload.dump();
         out.flush();
     }
-    // std::filesystem::rename is required by the standard to be atomic on
-    // POSIX (effectively rename(2)).  On NTFS modern std libs use
-    // MoveFileEx; semantics are good enough for our IDE poller.
+    // rename is atomic on posix and ntfs
     std::filesystem::rename(tmp, path);
 }
 
 }  // namespace
 
+// initial placeholder running=true epoch=0 completed_at=null
 void write_starting_status(const std::filesystem::path& path, long total_epochs) {
     const auto now = std::chrono::system_clock::now();
     nlohmann::json j = {
@@ -62,6 +61,8 @@ void write_starting_status(const std::filesystem::path& path, long total_epochs)
     atomic_write_json(path, j);
 }
 
+// full progress record
+// elapsed from started_at eta from rate when running and epoch > 0
 void write_progress(
     const std::filesystem::path& path,
     long epoch, long total_epochs,

@@ -1,24 +1,17 @@
-// CKKS canonical embedding — implementation.  See header for the math.
+// ckks canonical embedding impl see header
 //
-// Encode pipeline (slots z ∈ C^{N/2}  →  polynomial m ∈ Z_q[X]/(X^N+1)):
+// encode pipeline (slots z in C^{N/2} -> poly m in Z_q[X]/(X^N+1))
+//   z_full[k]       = z[k]         for k < N/2          (conjugate mirror)
+//   z_full[N-1-k]   = conj(z[k])   for k < N/2
+//   m_tilde = IFFT_N(z_full)
+//   m_j = real(m_tilde_j * zeta^{-j})    zeta = exp(pi*i/N)
+//   coeff_j = round(scale * m_j)
+//   lift coeff_j into rns per prime
 //
-//   z_full[k]       = z[k]         for k < N/2          ┐
-//   z_full[N-1-k]   = conj(z[k])   for k < N/2          ┘  conjugate-mirror
-//   m̃ = IFFT_N(z_full)                                  // length-N inverse DFT
-//   m_j = real(m̃_j · ζ^{-j})        ζ = exp(πi/N)         // un-twist
-//   coeff_j = round(scale · m_j)                          // quantise
-//   lift coeff_j into RNS form per CKKS prime              // Polynomial
+// decode is the matched inverse
 //
-// The forward (decode) direction is the matched inverse:
-//
-//   coeff_j ← signed integer obtained by Garner CRT on residues
-//   m_j     = coeff_j / scale
-//   m̃_j     = m_j · ζ^j                                    // twist
-//   z_full  = FFT_N(m̃)
-//   z[k]    = z_full[k]   for k < N/2                      // output slots
-//
-// The conjugate symmetry σ_{N-1-k} = conj(σ_k) is automatic when m has
-// real coefficients, so the decoder ignores the upper half.
+// conjugate symmetry sigma_{N-1-k} = conj(sigma_k) is automatic when m has real coefs
+// decoder ignores upper half
 #include <ssns/ckks/encoder.hpp>
 
 #include <ssns/ckks/crt.hpp>
@@ -33,6 +26,7 @@
 
 namespace ssns::ckks {
 
+// pre compute zeta tables and fft twiddles
 Encoder::Encoder() {
     constexpr std::size_t N = POLY_DEGREE;
     const double pi_over_N = std::numbers::pi_v<double> / static_cast<double>(N);
@@ -45,16 +39,15 @@ Encoder::Encoder() {
         zeta_pow_conj_[k] = std::conj(zeta_pow_[k]);
     }
 
-    // FFT twiddles: at stage of size m, we need exp(±2πi · k / m) for
-    // k = 0..m/2-1.  We pre-compute one entry per (m, k) in a flat array
-    // indexed by m + k where m is a power of two — the layout is the
-    // same as the standard "iterative Cooley-Tukey" textbook.
-    // CKKS canonical embedding uses σ_k = Σ_j m̃_j · ω^(jk) with ω=exp(2πi/N) —
-    // the kernel sign is +, opposite the standard "forward DFT" convention.
-    // Compose so that fft(_,false) computes the σ-direction (exp(+2πi·k/m)
-    // twiddles) and fft(_,true) computes m̃ = DFT_A(σ)/N (exp(-2πi·k/m), with
-    // /N normalization). The names "fwd" / "inv" thus refer to encode / decode
-    // direction, not signal-processing forward / inverse.
+    // fft twiddles
+    // at stage size m we need exp(+/- 2*pi*i * k / m) for k = 0..m/2-1
+    // pre compute one entry per (m, k) in a flat array indexed by m + k
+    //
+    // ckks uses sigma_k = sum_j m_tilde_j * omega^(jk) with omega = exp(2*pi*i/N)
+    // kernel sign is + opposite the standard forward dft
+    // so fft(_, false) computes sigma direction (exp(+) twiddles)
+    //    fft(_, true) computes m_tilde = DFT_A(sigma) / N (exp(-) with /N)
+    // names fwd inv refer to encode decode direction not signal forward inverse
     twiddle_fwd_.resize(N);
     twiddle_inv_.resize(N);
     for (std::size_t m = 2; m <= N; m <<= 1) {
@@ -68,6 +61,7 @@ Encoder::Encoder() {
     }
 }
 
+// in place bit reversal permutation used by both fft directions
 void Encoder::bitreverse_permute(std::vector<std::complex<double>>& a) const {
     const std::size_t N = a.size();
     const int log_N = std::bit_width(N) - 1;
@@ -82,6 +76,7 @@ void Encoder::bitreverse_permute(std::vector<std::complex<double>>& a) const {
     }
 }
 
+// iterative radix 2 fft in place divides by N when inverse
 void Encoder::fft(std::vector<std::complex<double>>& a, bool inverse) const {
     const std::size_t N = a.size();
     bitreverse_permute(a);
@@ -103,6 +98,7 @@ void Encoder::fft(std::vector<std::complex<double>>& a, bool inverse) const {
     }
 }
 
+// encode slot vector into coef form polynomial
 Polynomial Encoder::encode(const std::vector<std::complex<double>>& z, double scale) const {
     constexpr std::size_t N = POLY_DEGREE;
     constexpr std::size_t H = N / 2;
@@ -113,19 +109,24 @@ Polynomial Encoder::encode(const std::vector<std::complex<double>>& z, double sc
         throw std::invalid_argument("Encoder::encode: scale must be positive");
     }
 
-    // Mirror to length-N with conjugate symmetry: z_full[k] = z[k] for
-    // k < N/2 and z_full[N-1-k] = conj(z[k]).
+    // mirror to length N with conjugate symmetry
+    // conjugate mirror гарантирует что после ifft получим вещественные коэффициенты
+    // иначе encoded poly содержал бы мнимую часть и крипто бы сломалось
     std::vector<std::complex<double>> z_full(N);
     for (std::size_t k = 0; k < H; ++k) {
         z_full[k] = z[k];
         z_full[N - 1 - k] = std::conj(z[k]);
     }
 
-    // Inverse N-point DFT — gives the twisted coefficients m̃.
+    // inverse N point dft gives twisted coefs m_tilde
     fft(z_full, /*inverse=*/true);
 
-    // Un-twist: m_j = real(m̃_j · ζ^{-j}).  Because z_full was conjugate-
-    // symmetric the result is (numerically) real.
+    // un twist m_j = real(m_tilde_j * zeta^{-j})
+    // result is real because z_full was conjugate symmetric
+    //
+    // именно тут negacyclic structure появляется: умножение на zeta^{-j} = (e^{i*pi/N})^{-j}
+    // это и есть twist для X^N+1 ring (X^N == -1)
+    // без twist получили бы encoding для X^N-1 ring бесполезный для ckks
     Polynomial out;
     for (std::size_t j = 0; j < N; ++j) {
         const double m_real = (z_full[j] * zeta_pow_conj_[j]).real();
@@ -133,7 +134,7 @@ Polynomial Encoder::encode(const std::vector<std::complex<double>>& z, double sc
 
         const bool negative = (scaled < 0.0);
         const double mag = negative ? -scaled : scaled;
-        // mag fits comfortably in 64 bits for scale ≤ 2^53 and bounded slots.
+        // mag fits in 64 bits for scale <= 2^53 and bounded slots
         const std::uint64_t mag_u = static_cast<std::uint64_t>(mag);
         for (std::size_t i = 0; i < NUM_PRIMES; ++i) {
             const std::uint64_t q = COEFF_MODULI[i];
@@ -144,6 +145,7 @@ Polynomial Encoder::encode(const std::vector<std::complex<double>>& z, double sc
     return out;
 }
 
+// decode poly back into slots
 std::vector<std::complex<double>> Encoder::decode(const Polynomial& p,
                                                   double scale,
                                                   std::size_t level) const {
@@ -158,9 +160,8 @@ std::vector<std::complex<double>> Encoder::decode(const Polynomial& p,
 
     const double inv_scale = 1.0 / scale;
 
-    // Lift each coefficient via Garner CRT, center mod Q_level, divide by
-    // scale.  Only the first `level` residues participate — anything above
-    // (e.g. zeroed residues from a rescaled ciphertext) is ignored.
+    // lift each coef via garner crt center mod Q_level divide by scale
+    // only first `level` residues participate
     std::vector<std::complex<double>> z_full(N);
     for (std::size_t j = 0; j < N; ++j) {
         std::array<std::uint64_t, NUM_PRIMES> r{};
@@ -170,15 +171,16 @@ std::vector<std::complex<double>> Encoder::decode(const Polynomial& p,
         const U256 lifted = crt_lift(r, level);
         const double centered = crt_center_to_double(lifted, level);
         const double m_real = centered * inv_scale;
-        // Twist: m̃_j = m_j · ζ^j (input is real, so imaginary part is zero).
+        // twist m_tilde_j = m_j * zeta^j (input real so imag is zero)
+        // обратный twist для encode: тут zeta^j а в encode было zeta^{-j}
         z_full[j] = std::complex<double>(m_real, 0.0) * zeta_pow_[j];
     }
 
-    // Forward N-point DFT — recovers slot values σ_k = m(ζ^{2k+1}).
+    // forward N point dft recovers slot values sigma_k = m(zeta^{2k+1})
     fft(z_full, /*inverse=*/false);
 
-    // First N/2 entries are the user-visible slots; the upper half is the
-    // conjugate mirror.
+    // first N/2 entries are user visible slots upper half is conjugate mirror
+    // верхнюю половину игнорируем потому что она просто conj первой
     std::vector<std::complex<double>> out(H);
     for (std::size_t k = 0; k < H; ++k) out[k] = z_full[k];
     return out;

@@ -1,4 +1,4 @@
-// encrypt — implementation.  See header for the RLWE math.
+// encrypt impl see header
 #include <ssns/ckks/encrypt.hpp>
 
 #include <ssns/ckks/modarith.hpp>
@@ -14,8 +14,8 @@ namespace ssns::ckks {
 
 namespace {
 
-// Box-Muller Gaussian — same recipe as public_key.cpp / eval_key.cpp.
-// Kept TU-local to avoid coupling encrypt to keygen helpers.
+// box muller gaussian sampler same as public_key.cpp eval_key.cpp
+// kept tu local to avoid coupling encrypt to keygen helpers
 double sample_gaussian(std::mt19937_64& rng, double sigma) {
     auto next_unit = [&]() {
         constexpr double scale = 1.0 / 9007199254740992.0;  // 2^-53
@@ -32,6 +32,7 @@ double sample_gaussian(std::mt19937_64& rng, double sigma) {
     return sigma * r * std::cos(th);
 }
 
+// sample length N poly of rounded gaussian deviates
 std::vector<std::int64_t> sample_gaussian_poly(std::mt19937_64& rng, double sigma) {
     std::vector<std::int64_t> out(POLY_DEGREE);
     for (std::size_t k = 0; k < POLY_DEGREE; ++k) {
@@ -41,11 +42,10 @@ std::vector<std::int64_t> sample_gaussian_poly(std::mt19937_64& rng, double sigm
     return out;
 }
 
-// Sparse ternary `v` for encryption: each coefficient i.i.d.
-//   P(+1) = 1/4, P(0) = 1/2, P(-1) = 1/4.
-// Implementation: read two random bits — if they're 00 emit -1, 11 emit
-// +1, otherwise 0.  This gives the desired 1/4-1/2-1/4 distribution
-// from a single u64 draw amortised over 32 coefficients.
+// sparse ternary v for encryption iid with
+//   P(+1) = 1/4 P(0) = 1/2 P(-1) = 1/4
+// read two random bits 00 -> -1 11 -> +1 otherwise 0
+// gives the right distribution from one u64 amortised over 32 coefs
 std::vector<std::int64_t> sample_sparse_ternary(std::mt19937_64& rng) {
     std::vector<std::int64_t> out(POLY_DEGREE);
     std::uint64_t bits = 0;
@@ -58,7 +58,7 @@ std::vector<std::int64_t> sample_sparse_ternary(std::mt19937_64& rng) {
         const std::uint64_t pair = bits & 0x3ULL;
         bits >>= 2;
         bits_left -= 2;
-        // 0b00 → -1, 0b11 → +1, 0b01 / 0b10 → 0.
+        // 0b00 -> -1 0b11 -> +1 else 0
         if (pair == 0ULL) {
             out[k] = -1;
         } else if (pair == 3ULL) {
@@ -70,6 +70,7 @@ std::vector<std::int64_t> sample_sparse_ternary(std::mt19937_64& rng) {
     return out;
 }
 
+// forward ntt every residue of p in place
 void to_ntt_form(Polynomial& p, const std::array<NTT, NUM_PRIMES>& ntts) {
     for (std::size_t i = 0; i < NUM_PRIMES; ++i) {
         ntts[i].forward(p.residues[i].data());
@@ -78,12 +79,12 @@ void to_ntt_form(Polynomial& p, const std::array<NTT, NUM_PRIMES>& ntts) {
 
 }  // namespace
 
+// encrypt pt under pk with fresh randomness from rng
 Ciphertext encrypt(const Plaintext& pt,
                    const PublicKey& pk,
                    const std::array<NTT, NUM_PRIMES>& ntts,
                    std::mt19937_64& rng) {
-    // 1. Sample v (sparse ternary) and e0, e1 (Gaussian σ=3.2) in
-    //    coefficient form, lift into RNS, convert to NTT.
+    // 1 sample v (sparse ternary) and e0 e1 (gaussian sigma=3.2) coef form lift to rns convert to ntt
     Polynomial v = Polynomial::from_coeffs(sample_sparse_ternary(rng));
     Polynomial e0 = Polynomial::from_coeffs(sample_gaussian_poly(rng, KEYGEN_NOISE_SIGMA));
     Polynomial e1 = Polynomial::from_coeffs(sample_gaussian_poly(rng, KEYGEN_NOISE_SIGMA));
@@ -91,11 +92,11 @@ Ciphertext encrypt(const Plaintext& pt,
     to_ntt_form(e0, ntts);
     to_ntt_form(e1, ntts);
 
-    // 2. b·v and a·v — pointwise in NTT form (operands already there).
+    // 2 b*v and a*v pointwise in ntt form
     Polynomial bv = pointwise_mul_ntt(pk.b, v);
     Polynomial av = pointwise_mul_ntt(pk.a, v);
 
-    // 3. c0 = b·v + e0 + pt;  c1 = a·v + e1.
+    // 3 c0 = b*v + e0 + pt    c1 = a*v + e1
     Polynomial c0 = pointwise_add(bv, e0);
     c0 = pointwise_add(c0, pt.poly);
     Polynomial c1 = pointwise_add(av, e1);

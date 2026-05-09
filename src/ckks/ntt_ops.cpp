@@ -1,4 +1,4 @@
-// Pointwise polynomial operations — implementation.
+// pointwise polynomial ops impl
 #include <ssns/ckks/ntt_ops.hpp>
 
 #include <ssns/ckks/modarith.hpp>
@@ -8,9 +8,8 @@ namespace ssns::ckks {
 
 namespace {
 
-// Per-prime PSM-reduced pointwise multiply.  Templated so the compiler
-// constant-folds P/C and inlines mul_mod_psm{40,60} fully.  Pseudo-
-// Mersenne constants come from `PSM_C` in params.hpp.
+// per prime psm reduced pointwise multiply
+// templated so compiler folds P/C and inlines mul_mod_psm{40,60} fully
 template <std::uint64_t P, std::uint64_t C, bool IS60>
 inline void pointwise_mul_one_prime(const std::uint64_t* __restrict__ a,
                                      const std::uint64_t* __restrict__ b,
@@ -24,6 +23,7 @@ inline void pointwise_mul_one_prime(const std::uint64_t* __restrict__ a,
 
 }  // namespace
 
+// pointwise multiply two ntt form polys slot by slot per prime
 Polynomial pointwise_mul_ntt(const Polynomial& a, const Polynomial& b) {
     Polynomial out;
     pointwise_mul_one_prime<COEFF_MODULI[0], PSM_C[0], true >(a.residues[0].data(), b.residues[0].data(), out.residues[0].data());
@@ -33,6 +33,7 @@ Polynomial pointwise_mul_ntt(const Polynomial& a, const Polynomial& b) {
     return out;
 }
 
+// pointwise add two polys slot by slot per prime
 Polynomial pointwise_add(const Polynomial& a, const Polynomial& b) {
     Polynomial out;
     for (std::size_t i = 0; i < NUM_PRIMES; ++i) {
@@ -47,6 +48,7 @@ Polynomial pointwise_add(const Polynomial& a, const Polynomial& b) {
     return out;
 }
 
+// pointwise sub two polys slot by slot per prime
 Polynomial pointwise_sub(const Polynomial& a, const Polynomial& b) {
     Polynomial out;
     for (std::size_t i = 0; i < NUM_PRIMES; ++i) {

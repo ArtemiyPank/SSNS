@@ -1,29 +1,15 @@
-// CKKS plaintext — encoded message ready to be added to / multiplied by
-// ciphertexts.
+// ckks plaintext encoded message ready to be added to or multiplied by ciphertexts
 //
-// Storage convention
-// ------------------
-// `poly` is stored in **NTT form** (per-prime).  Rationale: cipher-plain
-// add/mul both operate elementwise in the frequency domain, so keeping
-// the plaintext pre-transformed avoids an NTT per arithmetic step.
+// poly stored in ntt form
+// cipher plain add and mul work elementwise in freq domain so pre transformed avoids ntt per op
 //
-// Encoder currently produces a coefficient-form polynomial — the helper
-// `Plaintext::from_polynomial` converts in place via the supplied NTT
-// instances.  We deliberately do not change `Encoder::encode`: keeping
-// the encoder pure (no NTT dependency in its public signature) means
-// callers that just want a polynomial form (tests, debug dumps) still
-// get one.
+// encoder produces coef form
+// from_polynomial converts in place via supplied ntt instances
+// keeping encoder ntt free is intentional so callers wanting just a polynomial form (tests debug) still get one
 //
-// Tracking fields
-// ---------------
-//   `scale` — the float-to-integer scaling that was used when encoding;
-//             needed by rescale (Phase 6.5) so the ciphertext can match
-//             the plaintext's scale.
-//   `level` — number of active RNS primes for this plaintext.  Fresh
-//             plaintexts use all `NUM_PRIMES`; rescale will drop one at
-//             a time.  We do not enforce truncation in `Polynomial` —
-//             higher-numbered residues are simply ignored by ops once
-//             `level` shrinks.
+// scale and level
+//   scale used when encoding needed by rescale to match plaintext scale
+//   level number of active rns primes fresh pt uses NUM_PRIMES rescale drops one
 #pragma once
 
 #include <ssns/ckks/ntt.hpp>
@@ -36,14 +22,12 @@
 namespace ssns::ckks {
 
 struct Plaintext {
-    Polynomial poly;     // NTT form.
-    double scale;        // Encoder scale used to produce `poly`.
-    std::size_t level;   // Active RNS primes; NUM_PRIMES on fresh plaintexts.
+    Polynomial poly;     // ntt form
+    double scale;        // encoder scale
+    std::size_t level;   // active rns primes
 
-    // Wrap a coefficient-form polynomial (e.g. straight from
-    // `Encoder::encode`) into a Plaintext: applies forward NTT per prime,
-    // captures the supplied scale, and tags level (defaulting to the
-    // full RNS depth NUM_PRIMES).
+    // wrap a coef form polynomial into a Plaintext
+    // applies forward ntt per prime captures scale tags level (default NUM_PRIMES)
     static Plaintext from_polynomial(Polynomial coeff_form,
                                      double scale,
                                      const std::array<NTT, NUM_PRIMES>& ntts,

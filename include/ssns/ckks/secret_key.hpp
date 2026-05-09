@@ -1,26 +1,22 @@
-// CKKS RLWE secret key — a sparse ternary polynomial in Z[X]/(X^N+1).
+// ckks rlwe secret key sparse ternary polynomial in Z[X]/(X^N+1)
 //
-// We use a fixed Hamming weight H = 64 (mirrors the SEAL / Lattigo
-// "h-secret-key" convention): the polynomial has exactly 64 nonzero
-// coefficients, each independently ±1.  This is more compact than a full
-// uniform-ternary secret and gives marginally cheaper noise growth.
+// rlwe assumption secret is small attacker recovers it iff they can solve approx svp on a structured ideal lattice
 //
-// Representation
-// --------------
-// `s` is stored in **coefficient form** (NOT NTT form).  Rationale:
-//   - Sparse representation is natural in coefficient form (only 64 of
-//     N=8192 entries are nonzero).
-//   - PublicKey / EvalKey generation needs to multiply a · s; that path
-//     converts s to NTT form on the fly via Polynomial::multiply, so the
-//     stored form does not need to be NTT.
+// fixed hamming weight H = 64 (mirrors seal lattigo h-secret-key)
+// poly has exactly 64 nonzero coefs each independently +/-1
+// more compact than full uniform ternary and gives slightly cheaper noise growth
 //
-// Lifting into RNS:
-//   centered value +1  →  residue 1   for every prime q_i
-//   centered value -1  →  residue q_i - 1
-//   centered value 0   →  residue 0
+// representation
+// s stored in coef form NOT ntt
+//   sparse repr is natural in coef form (only 64 of N entries nonzero)
+//   pk and evk gen need a*s which converts s to ntt on the fly via Polynomial::multiply
 //
-// All four RNS slots therefore agree on the support set (the index set of
-// nonzero coefficients), which the tests rely on.
+// lifting into rns
+//   centered +1 -> residue 1 for every q_i
+//   centered -1 -> residue q_i - 1
+//   centered  0 -> residue 0
+//
+// all rns slots agree on the support set
 #pragma once
 
 #include <ssns/ckks/poly.hpp>
@@ -31,24 +27,20 @@
 
 namespace ssns::ckks {
 
-// Hamming-weight target for the sparse ternary secret.  64 nonzero
-// positions out of N=8192.
+// hamming weight target 64 nonzero positions out of N=8192
 inline constexpr std::size_t SECRET_HAMMING_WEIGHT = 64;
 
 struct SecretKey {
-    // Ternary secret in **coefficient form** (NOT NTT form).
+    // ternary secret in coef form NOT ntt
     Polynomial s;
 
-    // Sample a fresh secret key using the supplied RNG.
+    // sample a fresh secret key
     //
-    // Algorithm:
-    //   1. Pick H=64 distinct positions out of N=8192 via partial
-    //      Fisher-Yates on an index array.
-    //   2. For each chosen position, draw a sign ∈ {-1, +1} uniformly.
-    //   3. Lift into RNS form per CKKS prime.
+    // 1 pick H=64 distinct positions out of N via partial fisher yates
+    // 2 for each chosen position draw sign in {-1, +1} uniformly
+    // 3 lift into rns per prime
     //
-    // Determinism: the output is a pure function of the RNG state at
-    // call time.
+    // determinism output is pure function of rng state at call time
     static SecretKey sample(std::mt19937_64& rng);
 };
 

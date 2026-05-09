@@ -1,7 +1,7 @@
-// ssns-server — HTTP server binary that hosts the Visual IDE backend.
-// Mirrors `uvicorn app:app --host ... --port ...` from the Python reference.
+// ssns-server http binary for the visual ide backend
+// same role as `uvicorn app:app --host ... --port ...` in python ref
 //
-// Usage:
+// usage
 //   ssns-server [--host 127.0.0.1] [--port 8765]
 //               [--ui-dir ./ui] [--data ui_data/training_log.json]
 //               [--status ui_data/training_status.json]
@@ -24,21 +24,20 @@ namespace fs = std::filesystem;
 
 namespace {
 
+// cli args for ssns-server
 struct Args {
     std::string host = "127.0.0.1";
     int port = 8765;
     fs::path ui_dir       = "ui";
     fs::path data_path    = "ui_data/training_log.json";
     fs::path status_path  = "ui_data/training_status.json";
-    fs::path benchmark    = "";   // auto-resolved if left blank
+    fs::path benchmark    = "";   // auto resolve when blank
     bool benchmark_explicit = false;
 };
 
-// Pick the most likely path to ssns-benchmark relative to CWD.  The
-// canonical source layout puts it under build/, but if the user cd's into
-// build/ and runs `./ssns-server` directly the binary is alongside.  We
-// also fall back to PATH lookup via execvp's own search (handled by the
-// HTTP layer), but report a clear error if no candidate exists at boot.
+// guess most likely path to ssns-benchmark relative to cwd
+// canonical layout puts it under build/ but if user cd's into build/ its right next to us
+// also falls back to PATH lookup at exec time
 fs::path autodetect_benchmark() {
     const fs::path candidates[] = {
         "./build/ssns-benchmark",
@@ -51,17 +50,20 @@ fs::path autodetect_benchmark() {
             return fs::weakly_canonical(c, ec);
         }
     }
-    // Last-ditch: PATH lookup will be attempted at exec time.
+    // last resort PATH lookup happens at exec time
     return "./ssns-benchmark";
 }
 
+// print err and exit 2
 [[noreturn]] void die(const std::string& msg) {
     std::cerr << "ssns-server: " << msg << "\n";
     std::exit(2);
 }
 
+// strcmp wrapper true when both c strings equal
 bool eq(const char* a, const char* b) { return std::strcmp(a, b) == 0; }
 
+// walk argv fill Args, unknown flag -> die
 Args parse(int argc, char** argv) {
     Args a;
     for (int i = 1; i < argc; ++i) {
@@ -87,10 +89,9 @@ Args parse(int argc, char** argv) {
     return a;
 }
 
-// On startup, repair stale training_status.json: if it claims a run is
-// active but no `ssns-benchmark` process is alive on this host, rewrite
-// the file with running=false + stopped=true so the frontend doesn't
-// permanently re-attach to a ghost run after the server is restarted.
+// on startup fix stale training_status json
+// if it says running but no benchmark proc alive flip running=false stopped=true
+// otherwise frontend reattaches to ghost run after server restart
 void heal_stale_status(const fs::path& status_path) {
     if (!fs::exists(status_path)) return;
     nlohmann::json j;
@@ -100,9 +101,8 @@ void heal_stale_status(const fs::path& status_path) {
     } catch (...) { return; }
     if (!j.is_object() || !j.value("running", false)) return;
 
-    // Cheap process check: scan /proc for any ssns-benchmark.  We don't
-    // know the original pid (the file currently doesn't carry it); if any
-    // benchmark is alive we leave the status alone.
+    // cheap proc check scan /proc for any ssns-benchmark
+    // Файл сейчас не хранит pid, так что мы просто проверяем, жив ли хоть один benchmark, если да, статус не трогаем
     bool benchmark_alive = false;
     for (const auto& entry : fs::directory_iterator("/proc")) {
         if (!entry.is_directory()) continue;

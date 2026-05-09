@@ -1,25 +1,22 @@
-// CKKS RLWE encryption — public-key form.
+// ckks rlwe encrypt public key form
 //
-// Given a plaintext `pt` (NTT form, scale, level) and a public key
-// `pk = (b, a)` satisfying b ≈ -a·s + e (mod q), encrypt produces
-// ciphertext (c0, c1) with
+// given pt and pk = (b, a) with b ~ -a*s + e produces
+//     c0 =  b*v + e0 + pt    (mod q)
+//     c1 =  a*v + e1         (mod q)
 //
-//     c0 =  b·v + e0 + pt    (mod q)
-//     c1 =  a·v + e1         (mod q)
+// where
+//     v   sparse ternary {-1, 0, +1} density 1/2
+//     e0 e1   rounded gaussian sigma = KEYGEN_NOISE_SIGMA = 3.2
 //
-// where:
-//     v  ← sparse ternary in {-1, 0, +1}, density 1/2 (each ±1 w.p. 1/4)
-//     e0, e1 ← rounded discrete Gaussian σ = KEYGEN_NOISE_SIGMA = 3.2
+// decrypt gives
+//     c0 + c1*s = (b + a*s)*v + e0 + e1*s + pt = pt + small noise
 //
-// Decryption recovers
-//     c0 + c1·s = (b + a·s)·v + e0 + e1·s + pt  =  pt + small noise.
+// проверка: b = -a*s + e значит (b + a*s)*v = e*v
+// noise малый так что round off на decode уносит его
 //
-// Storage convention follows PublicKey: both `c0` and `c1` are stored
-// in NTT form so cipher arithmetic operates pointwise without any
-// further transforms.
+// both c0 and c1 stored in ntt form so cipher arithmetic is pointwise
 //
-// Determinism: output depends only on the RNG state at call time
-// (same seed → same ciphertext) — useful for round-trip tests.
+// determinism: output depends only on rng state at call time
 #pragma once
 
 #include <ssns/ckks/ciphertext.hpp>
@@ -33,6 +30,8 @@
 
 namespace ssns::ckks {
 
+// encrypt pt under pk
+// draws v e0 e1 from rng returns ct in ntt form
 Ciphertext encrypt(const Plaintext& pt,
                    const PublicKey& pk,
                    const std::array<NTT, NUM_PRIMES>& ntts,

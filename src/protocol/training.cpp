@@ -15,6 +15,8 @@
 namespace ssns::protocol {
 
 namespace {
+// draw N(0, 1) batch of shape [batch, cols]
+// fresh inputs every epoch
 linalg::Matrix sample_normal_batch(std::size_t batch, std::size_t cols,
                                    nn::Rng& rng) {
     std::normal_distribution<double> dist(0.0, 1.0);
@@ -26,6 +28,8 @@ linalg::Matrix sample_normal_batch(std::size_t batch, std::size_t cols,
     return X;
 }
 
+// elementwise mse only used for logging
+// gradients flow through compute_gradients not this scalar
 double mse_loss(const linalg::Matrix& A, const linalg::Matrix& B) {
     double acc = 0.0;
     const double* a = A.data();
@@ -39,23 +43,82 @@ double mse_loss(const linalg::Matrix& A, const linalg::Matrix& B) {
 }
 }  // namespace
 
+// три варианта step:
+//   clean_train_step       - чистый baseline для tests и grid search
+//   clean_train_step_noisy - быстрый прокси для FHE
+//   clean_train_step_fhe   - полный CKKS pipeline ~100x медленнее
+
+// one plain step sample X teacher target student forward FA grad client update
 StepResult clean_train_step(
-    nn::CleanClient&  client,
+    nn::CleanClient& client,
     const nn::CleanServer& server,
     std::size_t batch_size,
     std::size_t input_dim,
-    nn::Rng& rng)
+    nn::Rng& rng,
+    double bimodality_alpha)
 {
-    linalg::Matrix X      = sample_normal_batch(batch_size, input_dim, rng);
+    // X гауссова свежая каждый шаг student учится функции а не точкам
+    linalg::Matrix X = sample_normal_batch(batch_size, input_dim, rng);
+    // Y_true живёт только на сервере teacher веса никогда не покидают сервер
+    linalg::Matrix Y_true = server.teacher_forward(X);
+
+    // H и Y_pred живут у клиента forward кэширует X и H_pre для последующего update
+    auto fwd = client.forward(X);
+    auto& H = fwd.H;
+    auto& Y_pred = fwd.Y_pred;
+
+    // порядок: forward -> compute_gradients -> update иначе update упадёт без кэша
+    auto grads = server.compute_gradients(H, Y_pred, Y_true, bimodality_alpha);
+    auto& grad_W2 = grads.grad_W2;
+    auto& error_hidden = grads.error_hidden;
+
+    // loss до update чтобы видеть state перед шагом
+    const double loss = mse_loss(Y_pred, Y_true);
+
+    client.update(grad_W2, error_hidden);
+
+    return StepResult{
+        std::move(X),
+        std::move(Y_true),
+        std::move(H),
+        std::move(Y_pred),
+        std::move(grad_W2),
+        std::move(error_hidden),
+        loss,
+    };
+}
+
+// plain step plus gaussian noise on grads to fake FHE error
+StepResult clean_train_step_noisy(
+    nn::CleanClient& client,
+    const nn::CleanServer& server,
+    std::size_t batch_size,
+    std::size_t input_dim,
+    nn::Rng& rng,
+    double bimodality_alpha,
+    double noise_std)
+{
+    linalg::Matrix X = sample_normal_batch(batch_size, input_dim, rng);
     linalg::Matrix Y_true = server.teacher_forward(X);
 
     auto fwd = client.forward(X);
-    auto& H      = fwd.H;
+    auto& H = fwd.H;
     auto& Y_pred = fwd.Y_pred;
 
-    auto grads = server.compute_gradients(H, Y_pred, Y_true);
-    auto& grad_W2     = grads.grad_W2;
+    auto grads = server.compute_gradients(H, Y_pred, Y_true, bimodality_alpha);
+    auto& grad_W2 = grads.grad_W2;
     auto& error_hidden = grads.error_hidden;
+
+    // add noise to grads to imitate CKKS error
+    // noise_std=0 means same as plain
+    if (noise_std > 0.0) {
+        std::normal_distribution<double> dist(0.0, noise_std);
+        auto& g = rng.engine();
+        double* g2 = grad_W2.data();
+        for (std::size_t i = 0; i < grad_W2.size(); ++i) g2[i] += dist(g);
+        double* eh = error_hidden.data();
+        for (std::size_t i = 0; i < error_hidden.size(); ++i) eh[i] += dist(g);
+    }
 
     const double loss = mse_loss(Y_pred, Y_true);
 
@@ -72,23 +135,15 @@ StepResult clean_train_step(
     };
 }
 
-// ---------------------------------------------------------------------------
-// FHE training step — three-phase implementation
-// ---------------------------------------------------------------------------
+// FHE training step three phases
+// each scalar of H and Y_pred is its own ciphertext value broadcast to all slots
+// trades packing for simpler matrix arithmetic
 //
-// Encoding scheme: each scalar of H / Y_pred is encrypted into its own CKKS
-// ciphertext with the value broadcast across all POLY_DEGREE/2 slots.  This
-// trades slot packing for simpler matrix-arithmetic (no rotations needed).
-//
-// Pipeline (all server-side ops on ciphertexts):
-//   1. error = (Y_pred - Y_true) / batch       [cipher - plain] then [scalar]
-//      then `rescale` to bring scale back to ~2^40 at level=3.
-//   2. H_l3  = rescale(mul_scalar(H, 1.0))     dummy scalar to drop H's level
-//      to 3 with the matching scale chain — needed so mul_cipher accepts both.
-//   3. grad_W2[h,o]    = sum_i mul_cipher(H_l3[i,h], error[i,o])  then rescale
-//      → level 2, scale = (~2^40)^2 / q_drop ≈ 2^20.
-//   4. error_hidden[i,h] = sum_o mul_plain(error[i,o], B_FA[o,h])
-//      → level 3, scale = (~2^40) * 2^40 ≈ 2^80.
+// server side pipeline all on ciphertexts:
+//   1 error = (Y_pred - Y_true) / batch then rescale
+//   2 H_l3 dummy mul and rescale to drop level
+//   3 grad_W2 = sum H * error then rescale
+//   4 error_hidden = sum error * B_FA cipher x plain
 namespace {
 
 using ssns::ckks::Ciphertext;
@@ -111,9 +166,7 @@ using ssns::ckks::sub_plain;
 
 constexpr std::size_t SLOT_COUNT = POLY_DEGREE / 2;
 
-// Encode a single scalar into a Plaintext with the value broadcast across
-// every slot.  Same plaintext can be reused for many ciphertext-plaintext
-// ops sharing the same `scale` and `level`.
+// encode one scalar broadcast across slots
 Plaintext encode_scalar(const Encoder& encoder,
                         const std::array<NTT, NUM_PRIMES>& ntts,
                         double value, double scale, std::size_t level) {
@@ -122,9 +175,8 @@ Plaintext encode_scalar(const Encoder& encoder,
     return Plaintext::from_polynomial(std::move(coeff), scale, ntts, level);
 }
 
-// Encrypt a single scalar broadcast across all slots.  Uses the supplied
-// RNG so determinism follows the caller's seeding.  Initial level is the
-// full RNS depth (NUM_PRIMES).
+// encrypt one scalar broadcast to all slots
+// uses caller rng so output is deterministic
 Ciphertext encrypt_scalar(const Encoder& encoder,
                           const std::array<NTT, NUM_PRIMES>& ntts,
                           const PublicKey& pk,
@@ -134,9 +186,9 @@ Ciphertext encrypt_scalar(const Encoder& encoder,
     return encrypt(pt, pk, ntts, rng);
 }
 
-// Decrypt a broadcast-scalar ciphertext and read slot 0's real part.
-// Uses pre-computed NTT-form sk to skip 4 forward NTTs per call —
-// crucial for the hot decrypt loop at preset config (153k decrypts).
+// decrypt broadcast scalar return slot 0 real part
+// uses precomputed NTT sk to skip 4 forward NTTs per call
+// hot path 153k calls per preset config
 double decrypt_scalar(const Encoder& encoder,
                       const std::array<NTT, NUM_PRIMES>& ntts,
                       const Polynomial& s_ntt,
@@ -152,10 +204,7 @@ double decrypt_scalar(const Encoder& encoder,
 
 }  // namespace
 
-// ---------------------------------------------------------------------------
-// Backend → ClientKeys / ServerKeys views
-// ---------------------------------------------------------------------------
-
+// build client view over backend includes SecretKey
 ClientKeys make_client_keys(const ckks::Backend& backend) {
     return ClientKeys{
         /*sk=*/      &backend.sk,
@@ -167,10 +216,9 @@ ClientKeys make_client_keys(const ckks::Backend& backend) {
     };
 }
 
+// build server view over backend no SecretKey
 ServerKeys make_server_keys(const ckks::Backend& backend) {
-    // NOTE: SecretKey is intentionally absent from ServerKeys.  This is
-    // the load-bearing invariant of the wire protocol — server code can
-    // only consume ciphertexts, never plaintext.
+    // SecretKey left out on purpose server can only consume ciphertexts
     return ServerKeys{
         /*pk=*/      &backend.pk,
         /*evk=*/     &backend.evk,
@@ -180,10 +228,9 @@ ServerKeys make_server_keys(const ckks::Backend& backend) {
     };
 }
 
-// ---------------------------------------------------------------------------
-// Phase 1: client-side encryption
-// ---------------------------------------------------------------------------
+// phase 1 client side encryption
 
+// encrypt H and Y_pred per scalar bundle with plain X
 ClientPayload client_encrypt(
     const linalg::Matrix& X,
     const linalg::Matrix& H,
@@ -192,12 +239,10 @@ ClientPayload client_encrypt(
     std::mt19937_64& fhe_rng)
 {
     const std::size_t batch_size = H.rows();
-    const std::size_t H_cols     = H.cols();
-    const std::size_t Y_cols     = Y_pred.cols();
+    const std::size_t H_cols = H.cols();
+    const std::size_t Y_cols = Y_pred.cols();
 
-    // Pre-derive per-task RNG seeds from the caller's fhe_rng so the
-    // encryption noise is deterministic regardless of thread schedule.
-    // Each scalar's encryption gets its own mt19937_64 instance.
+    // derive seeds up front so encryption noise is deterministic regardless of thread order
     const std::size_t H_count = batch_size * H_cols;
     const std::size_t Y_count = batch_size * Y_cols;
     std::vector<std::uint64_t> H_seeds(H_count);
@@ -234,24 +279,26 @@ ClientPayload client_encrypt(
     };
 }
 
-// ---------------------------------------------------------------------------
-// Phase 2: server-side homomorphic compute (NO SecretKey access)
-// ---------------------------------------------------------------------------
+// phase 2 server homomorphic compute no SecretKey
 
+// FA grads on ciphertexts only
+// server never sees plain H or Y_pred
 ServerResponse server_compute_gradients(
     const ClientPayload& payload,
     const nn::CleanServer& server,
-    const ServerKeys& keys)
+    const ServerKeys& keys,
+    double bimodality_alpha)
 {
     const std::size_t batch_size = payload.X.rows();
-    const std::size_t H_cols     = payload.H_cols;
-    const std::size_t Y_cols     = payload.Y_cols;
+    const std::size_t H_cols = payload.H_cols;
+    const std::size_t Y_cols = payload.Y_cols;
 
-    // Server computes Y_true locally — Teacher weights never leave the server.
+    // server computes Y_true locally teacher weights stay on server
     linalg::Matrix Y_true = server.teacher_forward(payload.X);
     const linalg::Matrix& B_FA = server.b_fa();
 
-    // ---- error = (Y_pred − Y_true) * (1/batch) -------------------------
+    // error = (Y_pred - Y_true) * (1/batch)
+    // деление на batch заменено на mul_scalar в FHE деление невозможно
     const double inv_batch = 1.0 / static_cast<double>(batch_size);
     const std::size_t E_count = batch_size * Y_cols;
     std::vector<Ciphertext> error_ct(E_count);
@@ -259,14 +306,25 @@ ServerResponse server_compute_gradients(
     for (std::size_t k = 0; k < E_count; ++k) {
         const std::size_t i = k / Y_cols;
         const std::size_t o = k % Y_cols;
+        double yt_val = Y_true(i, o);
+        if (bimodality_alpha != 0.0) {
+            // bimodality push толкаем target дальше от 0.5
+            // conf in [0, 1] is how far sigmoid is from 0.5
+            const double sig = 1.0 / (1.0 + std::exp(-yt_val));
+            const double conf = 2.0 * std::abs(sig - 0.5);
+            yt_val *= (1.0 + bimodality_alpha * conf);
+        }
         Plaintext yt_pt = encode_scalar(*keys.encoder, *keys.ntts,
-                                         Y_true(i, o), keys.scale, NUM_PRIMES);
-        Ciphertext diff   = sub_plain(payload.Y_pred_ct[k], yt_pt);
+                                         yt_val, keys.scale, NUM_PRIMES);
+        // sub_plain бесплатен по level mul_scalar потребляет один level
+        Ciphertext diff = sub_plain(payload.Y_pred_ct[k], yt_pt);
         Ciphertext scaled = mul_scalar(diff, inv_batch);
-        error_ct[k]       = rescale(scaled, *keys.ntts);
+        // rescale обязателен после mul иначе scale^2 переполнит modulus chain
+        error_ct[k] = rescale(scaled, *keys.ntts);
     }
 
-    // ---- Bring H to level 3 (matching error's scale chain) -------------
+    // bring H to level 3 to match error chain
+    // фиктивное mul_scalar(*,1.0) только чтобы согласовать уровни перед mul_cipher
     const std::size_t H_count = payload.H_ct.size();
     std::vector<Ciphertext> H_l3(H_count);
     #pragma omp parallel for schedule(static)
@@ -275,10 +333,9 @@ ServerResponse server_compute_gradients(
         H_l3[k] = rescale(bumped, *keys.ntts);
     }
 
-    // ---- grad_W2[h,o] = Σ_i H[i,h] * error[i,o] (cipher × cipher) -----
-    // H_cols × Y_cols independent reductions — perfect for thread fanout.
-    // mul_cipher / rescale read shared evk/ntts but never mutate them and
-    // allocate their outputs on the stack/heap, so no locking is needed.
+    // grad_W2[h,o] = sum_i H[i,h] * error[i,o] cipher x cipher
+    // H_cols * Y_cols independent reductions parallel friendly
+    // mul_cipher самая дорогая операция съедает level и нужен evk для relinearize
     std::vector<Ciphertext> grad_W2_ct(H_cols * Y_cols);
     #pragma omp parallel for collapse(2) schedule(static)
     for (std::size_t h = 0; h < H_cols; ++h) {
@@ -290,13 +347,15 @@ ServerResponse server_compute_gradients(
                 Ciphertext term = mul_cipher(H_l3[i * H_cols + h],
                                               error_ct[i * Y_cols + o],
                                               *keys.evk, *keys.ntts);
+                // add не съедает level аккумулируем все term-ы потом один rescale
                 acc = add(acc, term);
             }
             grad_W2_ct[h * Y_cols + o] = rescale(acc, *keys.ntts);
         }
     }
 
-    // ---- error_hidden[i,h] = Σ_o error[i,o] * B_FA[o,h] (cipher × plain)
+    // error_hidden[i,h] = sum_o error[i,o] * B_FA[o,h] cipher x plain
+    // mul_plain дешевле mul_cipher не нужен evk и съедает меньше шумового бюджета
     std::vector<Plaintext> bfa_pt;
     bfa_pt.reserve(Y_cols * H_cols);
     for (std::size_t o = 0; o < Y_cols; ++o) {
@@ -329,10 +388,9 @@ ServerResponse server_compute_gradients(
     };
 }
 
-// ---------------------------------------------------------------------------
-// Phase 3: client-side decryption
-// ---------------------------------------------------------------------------
+// phase 3 client side decryption
 
+// decrypt server response back to plain matrices
 DecryptedGradients client_decrypt(
     const ServerResponse& response,
     const ClientKeys& keys)
@@ -358,37 +416,42 @@ DecryptedGradients client_decrypt(
     return out;
 }
 
+// one full FHE step three phases plus update
 StepResult clean_train_step_fhe(
     nn::CleanClient& client,
     const nn::CleanServer& server,
     ckks::Backend& backend,
     std::size_t batch_size,
     std::size_t input_dim,
-    nn::Rng& rng)
+    nn::Rng& rng,
+    double bimodality_alpha)
 {
-    // Sample X, run forward — all client-side, plaintext.
-    linalg::Matrix X       = sample_normal_batch(batch_size, input_dim, rng);
-    auto fwd               = client.forward(X);
-    linalg::Matrix& H      = fwd.H;
+    // sample X and run client forward all plain client side
+    // forward всегда plain клиент держит W1 W2 у себя FHE начинается только на wire
+    linalg::Matrix X = sample_normal_batch(batch_size, input_dim, rng);
+    auto fwd = client.forward(X);
+    linalg::Matrix& H = fwd.H;
     linalg::Matrix& Y_pred = fwd.Y_pred;
 
-    // Pre-compute Y_true for the plaintext loss return value.  In a real
-    // deployment this happens server-side; computing it here for the
-    // client's MSE log is just an observability concession (it adds no
-    // information that wouldn't be in the gradients anyway).
+    // compute Y_true here just for the returned MSE
+    // in real deployment this happens on server
     linalg::Matrix Y_true = server.teacher_forward(X);
     const double loss = mse_loss(Y_pred, Y_true);
 
-    // Phase 1 — client encrypts.
+    // три фазы FHE encrypt -> compute -> decrypt SecretKey есть только у клиента
+    // phase 1 client encrypts
+    // зашифровано: H Y_pred plain: X (свежий гаусс не секрет)
     std::mt19937_64 fhe_rng(rng.engine()());
     auto client_keys = make_client_keys(backend);
     ClientPayload payload = client_encrypt(X, H, Y_pred, client_keys, fhe_rng);
 
-    // Phase 2 — server compute.  ServerKeys has no SecretKey by construction.
+    // phase 2 server compute no SecretKey by construction
+    // сервер видит только ciphertexts град FA полностью на encrypted данных
     auto server_keys = make_server_keys(backend);
-    ServerResponse response = server_compute_gradients(payload, server, server_keys);
+    ServerResponse response = server_compute_gradients(payload, server, server_keys, bimodality_alpha);
 
-    // Phase 3 — client decrypt + Adam update.
+    // phase 3 client decrypts and updates
+    // расшифровка только у клиента update идёт на plain градиентах
     DecryptedGradients grads = client_decrypt(response, client_keys);
     client.update(grads.grad_W2, grads.error_hidden);
 

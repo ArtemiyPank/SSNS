@@ -1,41 +1,29 @@
-// CKKS depth-0 linear operations.
+// ckks depth 0 linear ops
+// no cipher x cipher mul here so no relin
 //
-// "Depth-0" here means no cipher×cipher multiplication — these ops do not
-// require relinearization.  The set:
-//
-//   add(ct1, ct2)            cipher + cipher       (pointwise NTT add)
-//   sub(ct1, ct2)            cipher - cipher       (pointwise NTT sub)
+//   add(ct1, ct2)            cipher + cipher       (pointwise ntt add)
+//   sub(ct1, ct2)            cipher - cipher       (pointwise ntt sub)
 //   add_plain(ct, pt)        cipher + plaintext    (c0 += pt.poly)
 //   sub_plain(ct, pt)        cipher - plaintext    (c0 -= pt.poly)
-//   mul_scalar(ct, s)        cipher * real-scalar  (per-prime mod-mul)
+//   mul_scalar(ct, s)        cipher * real scalar  (per prime mod mul)
 //
-// All inputs are assumed to be in NTT form (the storage convention used
-// throughout the CKKS pipeline) — so pointwise add/sub/mul in the
-// frequency domain are equivalent to coefficient-domain polynomial ops.
+// all inputs ntt form so pointwise is equivalent to coef domain poly ops
 //
-// Preconditions
-// -------------
-// add/sub/add_plain/sub_plain: both operands must agree on `scale` and
-// `level`.  Mismatch throws `std::invalid_argument`.  Tests use exact
-// equality: the encoder produces deterministic scale values so floating-
-// point fuzz is not a concern.
+// preconditions
+// add/sub/add_plain/sub_plain need scale and level to match
+// mismatch throws std::invalid_argument
 //
-// Scale arithmetic
-// ----------------
-// add/sub/add_plain/sub_plain preserve scale and level.
+// scale arithmetic
+// add/sub/add_plain/sub_plain preserve scale and level
 //
-// mul_scalar bumps scale: the real `scalar` is encoded as a 60-bit integer
-// `k = round(scalar * 2^60)` so that the multiplication is exact mod each
-// prime.  The output ciphertext therefore carries
+// mul_scalar bumps scale
+// real scalar is encoded as 60 bit int k = round(scalar * 2^60)
+// so the multiply is exact mod each prime
+//   out.scale = ct.scale * 2^60
+//   out.level = ct.level
 //
-//     out.scale = ct.scale * 2^60     (= ct.scale * COEFF_MODULI[NUM_PRIMES-1] approx)
-//     out.level = ct.level
-//
-// Strictly the bump factor is exactly 2^60 (a power of two), not the prime
-// itself; the mismatch is corrected by `rescale` which divides by the prime
-// dropped from the chain.  See `rescale` (Phase 6.5) and the matched test
-// `mul_scalar then rescale: decrypt approx scalar*m within 1e-3` for the
-// canonical pairing 2^40 → 2^100 → 2^40 with level 4 → 4 → 3.
+// the bump factor is exactly 2^60 (not the prime itself)
+// rescale fixes the mismatch by dividing by the dropped prime
 #pragma once
 
 #include <ssns/ckks/ciphertext.hpp>
@@ -48,97 +36,73 @@
 
 namespace ssns::ckks {
 
+// cipher + cipher needs scale and level to match
 Ciphertext add(const Ciphertext& a, const Ciphertext& b);
+// cipher - cipher needs scale and level to match
 Ciphertext sub(const Ciphertext& a, const Ciphertext& b);
+// cipher + plaintext needs scale and level to match
 Ciphertext add_plain(const Ciphertext& ct, const Plaintext& pt);
+// cipher - plaintext needs scale and level to match
 Ciphertext sub_plain(const Ciphertext& ct, const Plaintext& pt);
 
-// Multiply a ciphertext by a real scalar.  See "Scale arithmetic" above
-// for how the output scale is computed (always ct.scale * 2^60, regardless
-// of `scalar`).  The result must be `rescale`-d before being added to a
-// ciphertext that hasn't been bumped.
+// multiply ciphertext by real scalar
+// output scale is always ct.scale * 2^60
+// must be rescaled before adding to a non bumped ciphertext
 Ciphertext mul_scalar(const Ciphertext& ct, double scalar);
 
-// ---------------------------------------------------------------------------
-// Depth-1 multiplications (Phase 6.5)
-// ---------------------------------------------------------------------------
+// depth 1 multiplications
 //
-// mul_plain(ct, pt) — cipher × plaintext.  Both operands stored in NTT form,
-// so the operation is pointwise multiplication on each (c0, c1) component.
-// Result carries the bumped scale and the lower of the two levels:
+// mul_plain(ct, pt) cipher x plaintext
+// pointwise mul on c0 and c1
+//   out.c0    = pointwise_mul_ntt(ct.c0, pt.poly)
+//   out.c1    = pointwise_mul_ntt(ct.c1, pt.poly)
+//   out.scale = ct.scale * pt.scale
+//   out.level = min(ct.level, pt.level)
 //
-//     out.c0    = pointwise_mul_ntt(ct.c0, pt.poly)
-//     out.c1    = pointwise_mul_ntt(ct.c1, pt.poly)
-//     out.scale = ct.scale * pt.scale
-//     out.level = min(ct.level, pt.level)
-//
-// Precondition: ct.level == pt.level — the active modulus chains must agree.
-// Mismatch throws std::invalid_argument.  Scale is NOT required to match
-// (this op is multiplicative — bumping is the whole point).
+// precondition ct.level == pt.level
+// scale does NOT need to match
 Ciphertext mul_plain(const Ciphertext& ct, const Plaintext& pt);
 
-// mul_cipher(a, b, evk, ntts) — cipher × cipher with RNS-gadget relinearisation.
+// mul_cipher(a, b, evk, ntts) cipher x cipher with rns gadget relin
 //
-// Tensor expansion (in NTT form):
+// tensor expansion in ntt form
 //     d0 = a.c0 * b.c0
 //     d1 = a.c0 * b.c1 + a.c1 * b.c0
 //     d2 = a.c1 * b.c1
 //
-// Relinearisation back to a degree-1 ciphertext via the RNS-gadget evaluation
-// key (see eval_key.hpp).  At a high level:
-//     for i in 0..NUM_PRIMES:
-//         d2_at_i = lift d2's slot-i residue to a centred integer per
-//                   coefficient, reduce mod each q_j, forward-NTT.
+// relin back to degree 1 using rns gadget eval key
+//     for i in 0..NUM_PRIMES
+//         d2_at_i = lift d2 slot i residue forward ntt
 //         c0_relin += d2_at_i * sub_keys[i].b
 //         c1_relin += d2_at_i * sub_keys[i].a
-//     c0_relin += d0 ; c1_relin += d1
+//     c0_relin += d0
+//     c1_relin += d1
 //
 //     out.scale = a.scale * b.scale
 //     out.level = a.level
 //
-// The `ntts` array is needed for the inverse-NTT-on-d2 (to lift the slot-i
-// residue) and the forward-NTT on d2_at_i.
+// preconditions
+//   a.scale ~ b.scale (within 1e-6 relative)
+//   a.level == b.level
+//   a.level >= 1
 //
-// Preconditions:
-//   * a.scale ≈ b.scale (within ~1e-6 relative — scales come from a
-//     deterministic chain, so exact equality is the common case)
-//   * a.level == b.level
-//   * a.level >= 1
-// Mismatch throws std::invalid_argument.
-//
-// The EvalKey is generated at full level NUM_PRIMES; ops at level L < NUM_PRIMES
-// only read the first L RNS slots, which is fine because all four were filled
-// at keygen.
-//
-// The result is at the SAME level as the inputs (mul_cipher does not drop a
-// level by itself).  Call `rescale` to bring the bumped scale back down and
-// drop one prime.
+// result is at the SAME level as inputs
+// call rescale to bring scale down and drop a prime
 Ciphertext mul_cipher(const Ciphertext& a,
                       const Ciphertext& b,
                       const EvalKey& evk,
                       const std::array<NTT, NUM_PRIMES>& ntts);
 
-// Drop the highest-indexed active prime from the modulus chain.  This is
-// the CKKS "rescale" / "mod-down" operation: it brings the scale back from
-// e.g. 2^100 down to ~2^40 after a `mul_scalar` (or, in later phases, a
-// cipher×cipher multiplication).
+// drop the highest active prime from the chain
+// brings scale from 2^100 back down to ~2^40 after a mul_scalar
 //
-// Concretely, with q_drop = COEFF_MODULI[ct.level - 1]:
-//
-//     out.c0[i][j] = (ct.c0[i][j] - lift(ct.c0[L-1][j])) * inv(q_drop, q_i)   (mod q_i)
-//                                                                  for i < L-1
-//     out.c1 analogously
+// with q_drop = COEFF_MODULI[ct.level - 1]
+//     out.c0[i][j] = (ct.c0[i][j] - lift(ct.c0[L-1][j])) * inv(q_drop, q_i)   (mod q_i) for i < L-1
+//     out.c1 same
 //     out.scale = ct.scale / q_drop
 //     out.level = ct.level - 1
 //
-// where lift(.) centers the residue mod q_drop into a signed integer.  All
-// of this is done by inverse-NTT-ing into coefficient form, applying the
-// per-prime correction, then re-NTT-ing the surviving residues — the dropped
-// residue slot is zeroed for hygiene but downstream ops should not read it
-// anyway.
-//
-// Throws std::invalid_argument if ct.level < 2 (cannot rescale to zero
-// active primes).
+// throws if ct.level < 2
 Ciphertext rescale(const Ciphertext& ct,
                    const std::array<NTT, NUM_PRIMES>& ntts);
 

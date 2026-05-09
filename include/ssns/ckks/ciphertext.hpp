@@ -1,24 +1,18 @@
-// CKKS ciphertext — a degree-1 RLWE pair encrypting a plaintext.
+// ckks ciphertext
+// holds c0 c1 polys forming an rlwe pair
 //
-// Storage convention
-// ------------------
-// `c0` and `c1` are stored in **NTT form** (per-prime).  Decryption
-// computes  m̃ ≈ c0 + c1·s  (mod q), and every CKKS arithmetic op
-// (cipher-cipher add/mul, cipher-plain add/mul) operates pointwise in
-// the frequency domain — so keeping ciphertexts pre-transformed avoids
-// repeating the NTT for every operation.
+// both stored in ntt form
+// decrypt does c0 + c1*s (mod q)
+// keeping pre transformed avoids ntt per op
 //
-// Tracking fields
-// ---------------
-//   `scale` — the float-to-integer scaling carried by the message.  Two
-//             ciphertexts must agree on `scale` before they can be added;
-//             cipher×cipher squares it; rescale (Phase 6.5) divides it
-//             by one prime.
-//   `level` — number of active RNS primes.  Fresh ciphertexts use all
-//             `NUM_PRIMES`.  Each rescale lowers `level` by one; downstream
-//             ops should ignore residue slots `[level..NUM_PRIMES)`.  We
-//             do NOT enforce truncation inside `Polynomial` — that's a
-//             concern for the rescale / arithmetic implementations.
+// scale and level
+//   scale is the float scaling carried by the message
+//   add needs both ciphertexts to agree on scale
+//   cipher x cipher squares it rescale divides by one prime
+//   level is number of active rns primes
+//   fresh ct uses all NUM_PRIMES rescale drops one
+//   ops should ignore residue slots above level
+//   we do NOT truncate inside Polynomial that is the rescale layer job
 #pragma once
 
 #include <ssns/ckks/params.hpp>
@@ -29,10 +23,10 @@
 namespace ssns::ckks {
 
 struct Ciphertext {
-    Polynomial c0;       // NTT form.
-    Polynomial c1;       // NTT form.
-    double scale{0.0};   // Scaling factor of the encrypted message.
-    std::size_t level{NUM_PRIMES};  // Active RNS primes.
+    Polynomial c0;       // ntt form
+    Polynomial c1;       // ntt form
+    double scale{0.0};   // message scaling
+    std::size_t level{NUM_PRIMES};  // active rns primes
 };
 
 }  // namespace ssns::ckks
