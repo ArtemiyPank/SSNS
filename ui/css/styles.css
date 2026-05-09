@@ -1,26 +1,31 @@
-/* ============================================================================
-   SSNS-Clean Visual IDE — strict dark academic theme.
-   No emojis. CSS-only. Stacked layout: header, config, viz controls,
-   two-column visualizer (Teacher | Student), analytics row.
-   ============================================================================ */
+/* ssns visual ide styles palette black gray white blue red
+   layout header config viz controls 2col viz teacher student analytics row */
 
 :root {
-    --bg:           #0e1117;
-    --bg-elev:      #161b22;
-    --bg-elev-2:    #1c2230;
-    --border:       #30363d;
-    --border-soft:  #21262d;
-    --fg:           #e6edf3;
-    --fg-dim:       #9da7b3;
-    --fg-subtle:    #6e7681;
-    --accent:       #58a6ff;
+    /* backgrounds black to dark gray */
+    --bg:           #0a0a0a;   /* near black canvas */
+    --bg-elev:      #141414;   /* card surface */
+    --bg-elev-2:    #1c1c1c;   /* nested surface */
+    --bg-hover:     #1f1f1f;   /* hover surface */
+    /* borders gray */
+    --border:       #2a2a2a;
+    --border-soft:  #1f1f1f;
+    --border-strong: #3a3a3a;
+    /* fg white to gray */
+    --fg:           #f5f5f5;   /* white text */
+    --fg-dim:       #a8a8a8;
+    --fg-subtle:    #6e6e6e;
+    /* accent blue */
+    --accent:       #4a9eff;
     --accent-dim:   #1f6feb;
-    --teacher:      #58a6ff;
-    --student:      #d29922;
-    --good:         #3fb950;
-    --warn:         #d29922;
-    --bad:          #f85149;
-    --danger:       #f85149;
+    /* roles teacher blue student red */
+    --teacher:      #4a9eff;   /* blue */
+    --student:      #f04747;   /* red */
+    /* status colors */
+    --good:         #4a9eff;   /* blue ok */
+    --warn:         #a8a8a8;   /* gray neutral */
+    --bad:          #f04747;   /* red */
+    --danger:       #f04747;
     --mono:         "JetBrains Mono", "Fira Code", "SF Mono", Menlo, Consolas, monospace;
     --sans:         -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
@@ -43,7 +48,7 @@ html, body {
 .dim    { color: var(--fg-dim); }
 .hint   { color: var(--fg-subtle); font-size: 10px; font-style: italic; }
 
-/* ---------- topbar ---------- */
+/* sticky topbar */
 .topbar {
     display: flex;
     align-items: center;
@@ -52,6 +57,12 @@ html, body {
     background: var(--bg-elev);
     border-bottom: 1px solid var(--border);
     height: 44px;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    backdrop-filter: blur(6px);
+    /* slight transparency so stuff under is still visible */
+    background: color-mix(in srgb, var(--bg-elev) 92%, transparent);
 }
 .topbar h1 {
     font-size: 14px;
@@ -60,13 +71,23 @@ html, body {
     letter-spacing: 0.5px;
     text-transform: uppercase;
     color: var(--fg-dim);
+    white-space: nowrap;
 }
 .topbar-meta {
     color: var(--fg-subtle);
     font-size: 11px;
     flex: 1;
     text-align: center;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
+.topbar-meta .meta-sep { color: var(--border-strong); margin: 0 6px; }
+.topbar-meta .meta-key { color: var(--fg-subtle); }
+.topbar-meta .meta-val { color: var(--fg-dim); }
+.topbar-meta .meta-val.fhe-on   { color: var(--accent); }
+.topbar-meta .meta-val.fhe-off  { color: var(--fg-subtle); }
+
 .pill {
     padding: 3px 12px;
     border-radius: 11px;
@@ -74,18 +95,40 @@ html, body {
     font-family: var(--mono);
     border: 1px solid var(--border);
     background: var(--bg-elev-2);
+    white-space: nowrap;
+    transition: background-color 0.2s, color 0.2s, border-color 0.2s;
 }
-.pill-idle       { color: var(--fg-subtle); }
-.pill-processing { color: var(--warn); border-color: var(--warn); animation: pulse 1.4s ease-in-out infinite; }
-.pill-ready      { color: var(--good); border-color: var(--good); }
-.pill-error      { color: var(--bad);  border-color: var(--bad); }
+
+/* status pill semantic colors red error amber processing green ready gray idle */
+.pill-idle {
+    color: var(--fg-subtle);
+    border-color: var(--border);
+    background: var(--bg-elev-2);
+}
+.pill-processing {
+    color: #ffb13d;        /* amber */
+    border-color: #ffb13d;
+    background: rgba(255, 177, 61, 0.08);
+    animation: pulse 1.4s ease-in-out infinite;
+}
+.pill-ready {
+    color: #3fcf6e;        /* green */
+    border-color: #3fcf6e;
+    background: rgba(63, 207, 110, 0.08);
+}
+.pill-error {
+    color: #ffffff;
+    border-color: var(--bad);
+    background: var(--bad);
+    font-weight: 600;
+}
 
 @keyframes pulse {
     0%, 100% { opacity: 1; }
-    50%      { opacity: 0.5; }
+    50%      { opacity: 0.55; }
 }
 
-/* ---------- config row ---------- */
+/* config row */
 .config-section {
     background: var(--bg-elev);
     border-bottom: 1px solid var(--border);
@@ -97,7 +140,7 @@ html, body {
     gap: 14px;
 }
 
-/* Sectioned cards: Architecture / Training / Encryption / Logging / Run */
+/* section cards */
 .config-card {
     border: 1px solid var(--border);
     border-radius: 6px;
@@ -148,7 +191,7 @@ html, body {
     font-weight: normal;
     font-size: 10px;
 }
-/* Bigger, easier-to-grab range sliders (24 px tall track + 18 px thumb). */
+/* bigger range sliders 24px tall track 18px thumb */
 .param input[type="range"] {
     grid-column: 1 / 2;
     width: 100%;
@@ -184,7 +227,7 @@ html, body {
     border-radius: 50%;
     cursor: pointer;
 }
-/* Numeric input next to slider — type any value, syncs with the slider. */
+/* number input next to slider syncs both ways */
 .param-num {
     grid-column: 2 / 3;
     width: 100%;
@@ -225,7 +268,7 @@ html, body {
     text-align: right;
 }
 
-/* Encryption: full-width clickable checkbox card. */
+/* full width clickable checkbox card */
 .param-checkbox {
     display: flex;
     align-items: center;
@@ -253,7 +296,37 @@ html, body {
     font-size: 13px;
 }
 
-/* Run section: presets row + action row */
+/* encryption mode 3way radio reuses checkbox style */
+.encryption-mode { display: flex; flex-direction: column; gap: 6px; }
+.param-radio {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg-elev);
+    cursor: pointer;
+    user-select: none;
+}
+.param-radio:hover { border-color: var(--accent); }
+.param-radio:has(input:checked) { border-color: var(--accent); background: var(--bg-hover, var(--bg-elev)); }
+.param-radio input[type="radio"] {
+    accent-color: var(--accent);
+    margin: 0;
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+}
+.param-radio > span {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    color: var(--fg);
+    font-size: 13px;
+}
+
+/* run section presets row plus action row */
 .run-row { display: flex; flex-direction: column; gap: 10px; }
 .preset-row, .action-row { display: flex; gap: 10px; flex-wrap: wrap; }
 .preset-row button,
@@ -265,11 +338,11 @@ html, body {
 .action-row #run-btn   { font-weight: 600; }
 .action-row #stop-btn  {
     flex: 0 0 140px;
-    background: var(--danger, #c0392b);
+    background: var(--danger, #f04747);
     color: white;
-    border: 1px solid var(--danger, #c0392b);
+    border: 1px solid var(--danger, #f04747);
 }
-.action-row #stop-btn:hover { background: #e74c3c; border-color: #e74c3c; }
+.action-row #stop-btn:hover { background: #ff5757; border-color: #ff5757; }
 .run-status {
     grid-column: 1 / 2;
     margin-top: 4px;
@@ -280,7 +353,7 @@ html, body {
 .run-status.error { color: var(--bad); }
 .run-status.ok    { color: var(--good); }
 
-/* ---------- buttons ---------- */
+/* buttons */
 button {
     cursor: pointer;
     font-family: var(--sans);
@@ -308,7 +381,7 @@ button.secondary {
 }
 button.secondary:hover { color: var(--fg); border-color: var(--accent); }
 
-/* ---------- viz controls ---------- */
+/* viz controls */
 .viz-controls {
     display: flex;
     gap: 22px;
@@ -364,7 +437,7 @@ button.secondary:hover { color: var(--fg); border-color: var(--accent); }
 }
 .viz-controls input[type="range"]:disabled { opacity: 0.4; cursor: not-allowed; }
 
-/* ---------- main visualizer ---------- */
+/* main viz */
 .networks {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -420,7 +493,7 @@ body.show-weights .layer-block.weight-block { display: block; }
 .heatmap.weights { aspect-ratio: 9 / 4; }
 .heatmap.output  { aspect-ratio: 9 / 3; }
 
-/* ---------- analytics ---------- */
+/* analytics */
 .analytics {
     display: grid;
     grid-template-columns: 1.2fr 1.2fr 1.6fr;
@@ -460,7 +533,7 @@ body.show-weights .layer-block.weight-block { display: block; }
     font-size: 11px;
     color: var(--fg-dim);
 }
-/* .metric* classes are still used by .stress-summary-grid cards. */
+/* metric also reused by stress summary cards */
 .metric {
     background: var(--bg);
     border: 1px solid var(--border-soft);
@@ -477,13 +550,11 @@ body.show-weights .layer-block.weight-block { display: block; }
     color: var(--fg-subtle);
 }
 .metric-value     { font-size: 14px; font-weight: 600; color: var(--fg); }
-.metric-value.good { color: var(--good); }
-.metric-value.bad  { color: var(--bad); }
 
-/* ---------- manual input ---------- */
-/* Manual Input spans the whole analytics row. Three-column horizontal
-   strip in the top row: form+status+summary | Teacher Y_T | Student Y_S.
-   Bit strings (.manual-result) form a SECOND row spanning all columns. */
+/* manual input
+   spans full analytics row
+   top row 3 col strip form+status+summary teacher Y_T student Y_S
+   bit strings span full width below */
 .analytics-manual {
     grid-column: 1 / -1;
 }
@@ -562,7 +633,7 @@ body.show-weights .layer-block.weight-block { display: block; }
 .manual-status.error, .stress-status.error { color: var(--bad); }
 .manual-status.ok,    .stress-status.ok    { color: var(--good); }
 
-/* ---------- stress test panel ---------- */
+/* stress test panel */
 .stress-help { margin: 0 0 10px; font-size: 11px; }
 .stress-form {
     display: grid;
@@ -647,17 +718,6 @@ body.show-weights .layer-block.weight-block { display: block; }
     text-transform: uppercase;
 }
 .manual-result { margin-top: 10px; }
-.manual-result .summary {
-    padding: 8px 10px;
-    border: 1px solid var(--border-soft);
-    border-radius: 3px;
-    background: var(--bg);
-    margin-bottom: 8px;
-    font-family: var(--mono);
-    font-size: 11px;
-}
-.manual-result .summary.match    { border-color: var(--good); }
-.manual-result .summary.mismatch { border-color: var(--bad); }
 .bit-strings {
     background: var(--bg);
     border: 1px solid var(--border-soft);
@@ -676,14 +736,13 @@ body.show-weights .layer-block.weight-block { display: block; }
     text-transform: uppercase;
     letter-spacing: 0.5px;
 }
-.bit-strings .b1   { color: #f0a73a; }
-.bit-strings .b0   { color: #58a6ff; }
+.bit-strings .b1   { color: var(--student); }   /* bit 1 red */
+.bit-strings .b0   { color: var(--teacher); }   /* bit 0 blue */
 .bit-strings .gap  { color: var(--fg-subtle); }
 .bit-strings .miss { color: var(--bad); font-weight: 600; }
 
-/* ---------- manual heatmaps (two cluster grids: Teacher | Student) ---------- */
-/* `display: contents` makes children of the heatmaps wrapper become
-   direct grid items of .manual-grid (so each side gets its own track). */
+/* manual heatmaps two cluster grids teacher student */
+/* display contents makes children direct grid items so each side gets own track */
 .manual-heatmaps          { display: contents; }
 .manual-heatmaps[hidden] > * { display: none; }
 .manual-side {
@@ -702,7 +761,7 @@ body.show-weights .layer-block.weight-block { display: block; }
     flex-wrap: wrap;
 }
 .manual-side canvas.heatmap.output {
-    aspect-ratio: 2 / 1;     /* wider/shorter = more horizontal block */
+    aspect-ratio: 2 / 1;     /* wider shorter */
     width: 100%;
     height: auto;
     display: block;
@@ -724,11 +783,11 @@ body.show-weights .layer-block.weight-block { display: block; }
     margin-right: 4px;
     vertical-align: middle;
 }
-.legend-swatch.swatch-bit1 { background: rgb(225, 110, 60); }
-.legend-swatch.swatch-bit0 { background: rgb( 30, 140, 175); }
-.legend-swatch.swatch-dead { background: rgb( 64,  64,  72); }
+.legend-swatch.swatch-bit1 { background: var(--student); }     /* red */
+.legend-swatch.swatch-bit0 { background: var(--teacher); }     /* blue */
+.legend-swatch.swatch-dead { background: rgb( 64,  64,  64); } /* gray */
 
-/* ---------- tooltip ---------- */
+/* tooltip */
 .tooltip {
     position: fixed;
     z-index: 9999;
@@ -745,12 +804,12 @@ body.show-weights .layer-block.weight-block { display: block; }
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
 }
 
-/* ---------- scrollbars ---------- */
+/* scrollbars */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
 
-/* ---------- responsive ---------- */
+/* responsive */
 @media (max-width: 1100px) {
     .analytics { grid-template-columns: 1fr 1fr; }
     .analytics-manual { grid-column: 1 / -1; }

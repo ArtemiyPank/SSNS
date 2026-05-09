@@ -1,6 +1,4 @@
-/**
- * Backend API wrappers — thin fetch helpers.
- */
+// thin fetch wrappers for backend api
 
 const ENDPOINT = {
     trainingData:   "/api/training_data",

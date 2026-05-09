@@ -14,13 +14,11 @@
     <span id="status-pill" class="pill pill-idle">Idle</span>
 </header>
 
-<!-- =================================================================== -->
-<!-- 1. Configuration row.                                               -->
-<!-- =================================================================== -->
+<!-- config row -->
 <section class="config-section">
     <form id="config-form">
 
-        <!-- ARCHITECTURE -->
+        <!-- arch -->
         <fieldset class="config-card">
             <legend>Architecture</legend>
             <div class="config-grid">
@@ -57,7 +55,7 @@
             </div>
         </fieldset>
 
-        <!-- TRAINING -->
+        <!-- training -->
         <fieldset class="config-card">
             <legend>Training</legend>
             <div class="config-grid">
@@ -86,22 +84,53 @@
                     <input type="range"  id="warmup_frac"     name="warmup_frac"     min="0" max="0.3" step="0.01" value="0.05">
                     <input type="number" id="warmup_frac_num" class="param-num"     min="0" max="0.5" step="0.01" value="0.05">
                 </div>
+                <div class="param">
+                    <label for="bimodality_alpha">bimodality_alpha <span class="hint">push outputs toward 0/1</span></label>
+                    <input type="range"  id="bimodality_alpha"     name="bimodality_alpha"     min="0" max="2" step="0.05" value="0">
+                    <input type="number" id="bimodality_alpha_num" class="param-num"           min="0" max="5" step="0.05" value="0">
+                </div>
             </div>
         </fieldset>
 
-        <!-- ENCRYPTION -->
+        <!-- encryption -->
         <fieldset class="config-card">
             <legend>Encryption</legend>
-            <label class="param-checkbox">
-                <input type="checkbox" id="use_fhe" name="use_fhe">
+            <div class="encryption-mode" role="radiogroup" aria-label="Encryption mode">
+                <label class="param-radio">
+                    <input type="radio" name="encryption_mode" value="plaintext">
+                    <span>
+                        <strong>Plaintext (no FHE)</strong>
+                        <span class="hint">Fastest: trains on raw tensors, no encryption. Use for debugging and proxy-quality validation.</span>
+                    </span>
+                </label>
+                <label class="param-radio">
+                    <input type="radio" name="encryption_mode" value="simulated">
+                    <span>
+                        <strong>Simulated FHE (plaintext + Gaussian noise)</strong>
+                        <span class="hint">Plaintext speed (~50ms) but adds CKKS-equivalent noise (σ=0.001 calibrated to real FHE). Drop-in proxy for real CKKS without the 20-min wait.</span>
+                    </span>
+                </label>
+                <label class="param-radio">
+                    <input type="radio" name="encryption_mode" value="real_fhe" checked>
+                    <span>
+                        <strong>Real CKKS FHE</strong>
+                        <span class="hint">~20-50× slower; encrypts H, Y_pred client→server and grad_W2, error_hidden server→client every epoch.</span>
+                    </span>
+                </label>
+            </div>
+            <!-- hidden mirrors of the radio server reads use_fhe + simulate_fhe_noise -->
+            <input type="hidden" id="use_fhe" name="use_fhe" value="true">
+            <input type="hidden" id="simulate_fhe_noise" name="simulate_fhe_noise" value="0">
+            <label class="param-checkbox" style="margin-top: 8px;">
+                <input type="checkbox" id="key_confirmation" name="key_confirmation" checked>
                 <span>
-                    <strong>Use CKKS FHE on the wire</strong>
-                    <span class="hint">~20–50× slower; encrypts H, Y_pred client→server and grad_W2, error_hidden server→client every epoch</span>
+                    <strong>Final key confirmation (SHA-256 hash exchange)</strong>
+                    <span class="hint">Both parties hash their derived bits and compare; mismatch → discard and retry. Like the check digit in Israeli ID - detects any silent corruption.</span>
                 </span>
             </label>
         </fieldset>
 
-        <!-- LOGGING -->
+        <!-- logging -->
         <fieldset class="config-card">
             <legend>Logging</legend>
             <div class="config-grid">
@@ -118,14 +147,13 @@
             </div>
         </fieldset>
 
-        <!-- ACTIONS -->
+        <!-- actions -->
         <fieldset class="config-card config-card-actions">
             <legend>Run</legend>
             <div class="run-row">
                 <div class="preset-row">
-                    <button type="button" id="preset-fhe-fast-btn" class="secondary" title="~5 min FHE training, ~1.5 shared bits/trial">FHE fast</button>
-                    <button type="button" id="preset-fhe-btn"      class="secondary" title="~10 min FHE training, ~1.97 shared bits/trial">FHE preset</button>
-                    <button type="button" id="preset-fhe-rich-btn" class="secondary" title="~15 min FHE training, ~2.07 shared bits/trial">FHE rich</button>
+                    <button type="button" id="preset-fhe-conservative-btn" class="secondary" title="~18.8 min FHE (real CKKS verified); cs=5 OD=30 ep=230 α=0.3; mean 2.34 bits/trial; final_loss 0.11 (truly converged); 100% TRUE FULL on 1500 random seeds (50K trials each)">FHE conservative</button>
+                    <button type="button" id="preset-fhe-balanced-btn" class="secondary" title="~17.3 min FHE (real CKKS verified on 4 seeds); cs=5 OD=80 ep=80 α=0.7; mean 5.39 bits/trial (avg of 4 seeds); 73% success first try → 99.99979% after 10 retries; 0 silent failures (SHA-256 confirmation required); final_loss high (~1.1, bimodality-driven)">FHE balanced (more bits)</button>
                 </div>
                 <div class="action-row">
                     <button type="submit" id="run-btn"  class="primary">▶  Run Training</button>
@@ -139,9 +167,7 @@
     </form>
 </section>
 
-<!-- =================================================================== -->
-<!-- 2. Visualization controls.                                          -->
-<!-- =================================================================== -->
+<!-- viz controls -->
 <section class="viz-controls">
     <label class="ctrl">
         <span class="ctrl-label">Batch Item Index</span>
@@ -154,42 +180,40 @@
     </label>
 
     <label class="ctrl ctrl-stretch">
-        <span class="ctrl-label">Epoch <span id="epoch-display" class="mono">—</span></span>
+        <span class="ctrl-label">Epoch <span id="epoch-display" class="mono">-</span></span>
         <input type="range" id="epoch-slider" min="0" max="0" step="1" value="0" disabled>
     </label>
 </section>
 
-<!-- =================================================================== -->
-<!-- 3. Main visualizer — Teacher | Student.                             -->
-<!-- =================================================================== -->
+<!-- main viz teacher student -->
 <main class="networks">
 
     <section class="network teacher">
         <h2>Teacher Network <span class="subtle">(reference, frozen)</span></h2>
 
-        <!-- Top-down: Input X -> W1_T -> Hidden H_T -> W2_T -> Y_true -->
+        <!-- top down X W1_T H_T W2_T Y_true -->
         <div class="layer-block">
-            <div class="layer-label">Input X <span class="dim mono" id="dim-x-t">—</span><span class="subtle">shared with Student</span></div>
+            <div class="layer-label">Input X <span class="dim mono" id="dim-x-t">-</span><span class="subtle">shared with Student</span></div>
             <canvas id="hm-x-t" class="heatmap vector" width="900" height="60"></canvas>
         </div>
 
         <div class="layer-block weight-block">
-            <div class="layer-label">W1_T <span class="dim mono" id="dim-w1t">—</span></div>
+            <div class="layer-label">W1_T <span class="dim mono" id="dim-w1t">-</span></div>
             <canvas id="hm-w1t" class="heatmap weights" width="900" height="200"></canvas>
         </div>
 
         <div class="layer-block">
-            <div class="layer-label">Hidden H_T <span class="dim mono" id="dim-ht">—</span><span class="subtle">ReLU(X @ W1_T)</span></div>
+            <div class="layer-label">Hidden H_T <span class="dim mono" id="dim-ht">-</span><span class="subtle">ReLU(X @ W1_T)</span></div>
             <canvas id="hm-ht" class="heatmap vector" width="900" height="60"></canvas>
         </div>
 
         <div class="layer-block weight-block">
-            <div class="layer-label">W2_T <span class="dim mono" id="dim-w2t">—</span></div>
+            <div class="layer-label">W2_T <span class="dim mono" id="dim-w2t">-</span></div>
             <canvas id="hm-w2t" class="heatmap weights" width="900" height="200"></canvas>
         </div>
 
         <div class="layer-block">
-            <div class="layer-label">Output Y_true <span class="dim mono" id="dim-yt">—</span><span class="subtle">sigmoid, grouped into clusters</span></div>
+            <div class="layer-label">Output Y_true <span class="dim mono" id="dim-yt">-</span><span class="subtle">sigmoid, grouped into clusters</span></div>
             <canvas id="hm-yt" class="heatmap output" width="900" height="240"></canvas>
         </div>
     </section>
@@ -198,44 +222,42 @@
         <h2>Student Network <span class="subtle">(trainable)</span></h2>
 
         <div class="layer-block">
-            <div class="layer-label">Input X <span class="dim mono" id="dim-x-s">—</span><span class="subtle">shared with Teacher</span></div>
+            <div class="layer-label">Input X <span class="dim mono" id="dim-x-s">-</span><span class="subtle">shared with Teacher</span></div>
             <canvas id="hm-x-s" class="heatmap vector" width="900" height="60"></canvas>
         </div>
 
         <div class="layer-block weight-block">
-            <div class="layer-label">W1 <span class="dim mono" id="dim-w1s">—</span></div>
+            <div class="layer-label">W1 <span class="dim mono" id="dim-w1s">-</span></div>
             <canvas id="hm-w1s" class="heatmap weights" width="900" height="200"></canvas>
         </div>
 
         <div class="layer-block">
-            <div class="layer-label">Hidden H <span class="dim mono" id="dim-hs">—</span><span class="subtle">ReLU(X @ W1)</span></div>
+            <div class="layer-label">Hidden H <span class="dim mono" id="dim-hs">-</span><span class="subtle">ReLU(X @ W1)</span></div>
             <canvas id="hm-hs" class="heatmap vector" width="900" height="60"></canvas>
         </div>
 
         <div class="layer-block weight-block">
-            <div class="layer-label">W2 <span class="dim mono" id="dim-w2s">—</span></div>
+            <div class="layer-label">W2 <span class="dim mono" id="dim-w2s">-</span></div>
             <canvas id="hm-w2s" class="heatmap weights" width="900" height="200"></canvas>
         </div>
 
         <div class="layer-block">
-            <div class="layer-label">Output Y_pred <span class="dim mono" id="dim-ys">—</span><span class="subtle">sigmoid, grouped into clusters</span></div>
+            <div class="layer-label">Output Y_pred <span class="dim mono" id="dim-ys">-</span><span class="subtle">sigmoid, grouped into clusters</span></div>
             <canvas id="hm-ys" class="heatmap output" width="900" height="240"></canvas>
         </div>
     </section>
 
 </main>
 
-<!-- =================================================================== -->
-<!-- 4. Analytics & manual input.                                        -->
-<!-- =================================================================== -->
+<!-- analytics and manual input -->
 <section class="analytics">
 
     <div class="analytics-block analytics-loss">
         <h2>Loss Curve</h2>
         <canvas id="loss-chart" width="540" height="240"></canvas>
         <div class="loss-readout mono">
-            <span>min: <span id="loss-min">—</span></span>
-            <span>last: <span id="loss-last">—</span></span>
+            <span>min: <span id="loss-min">-</span></span>
+            <span>last: <span id="loss-last">-</span></span>
         </div>
     </div>
 
@@ -251,7 +273,7 @@
                 <span class="stress-input-label">Trials</span>
                 <input type="number" id="stress-n" value="200" min="1" max="1000000" step="1">
             </label>
-            <label class="stress-input" title="RNG seed for the N(0,1) trial inputs. Same seed = identical X across runs (deterministic for a fixed trained network); different seed = different random samples (sampling noise on match-rate). Does NOT affect the trained network — only the test inputs.">
+            <label class="stress-input" title="RNG seed for the N(0,1) trial inputs. Same seed = identical X across runs (deterministic for a fixed trained network); different seed = different random samples (sampling noise on match-rate). Does NOT affect the trained network - only the test inputs.">
                 <span class="stress-input-label">Seed</span>
                 <input type="number" id="stress-seed" value="42">
             </label>
@@ -268,9 +290,8 @@
     <div class="analytics-block analytics-manual">
         <h2>Manual Input</h2>
 
-        <!-- 3-column horizontal layout:
-                  [ form + status + summary ]  [ Teacher Y_T ]  [ Student Y_S ]
-             Bit strings (T/S) span the full width as a row UNDER the heatmaps. -->
+        <!-- 3 col row form+status+summary teacher Y_T student Y_S
+             bit strings span full width below the heatmaps -->
         <div class="manual-grid">
 
             <div class="manual-col-form">
@@ -310,7 +331,7 @@
                 </div>
             </div>
 
-            <!-- Bit strings — full-width row below everything. -->
+            <!-- bit strings full width row below -->
             <div id="manual-result" class="manual-result"></div>
 
         </div>

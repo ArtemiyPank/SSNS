@@ -1,13 +1,11 @@
-/**
- * SSNS-Clean Visual IDE — main orchestrator (v9 layout, range-slider config).
- *
- * State:
- *   data            full training_log.json (or null until first load)
- *   snapshotIndex   index into state.data.snapshots
- *   batchIndex      index into snapshot.samples
- *   showWeights     boolean — whether weight matrices are rendered
- *   polling         interval id during /api/run_training (or null)
- */
+// ssns visual ide main orchestrator v9 layout range slider config
+//
+// state
+//   data            full training_log.json null until first load
+//   snapshotIndex   index into state.data.snapshots
+//   batchIndex      index into snapshot.samples
+//   showWeights     bool render weights or not
+//   polling         interval id during run_training or null
 import {
     getTrainingData, getTrainingStatus,
     postRunTraining, postStopTraining, postManualTest, postStressTest,
@@ -18,28 +16,23 @@ import { LossChart } from "/ui/js/lossChart.js";
 
 const tooltip = document.getElementById("tooltip");
 
-// ---------------------------------------------------------------------------
-// State.
-// ---------------------------------------------------------------------------
+// state
 
 const state = {
     data:            null,
     snapshotIndex:   0,
     batchIndex:      0,
     showWeights:     false,
-    polling:         null,   // /api/training_data interval id (snapshots)
-    statusPolling:   null,   // /api/training_status interval id (progress)
-    autoStressDone:  false,  // already auto-ran stress for this completion?
-    seenRunning:     false,  // status confirmed running:true at least once?
-    runEpochs:       0,      // epochs requested for the current run
-    runSubmittedAt:  0,      // wall-clock ms when /api/run_training POST went out
+    polling:         null,   // training_data interval id snapshots
+    statusPolling:   null,   // training_status interval id progress
+    autoStressDone:  false,  // auto stress already ran
+    seenRunning:     false,  // status reported running:true at least once
+    runSubmittedAt:  0,      // wall clock ms of run_training POST
 };
 
-// ---------------------------------------------------------------------------
-// Heatmaps (3 weight matrices + 2 cluster-strip outputs).
-// ---------------------------------------------------------------------------
+// heatmaps 3 weight matrices plus 2 cluster strip outputs
 
-// Top-down per column: Input X -> W1 -> Hidden H -> W2 -> Output Y.
+// top down per col X W1 H W2 Y
 const hmXT  = new VectorHeatmap(document.getElementById("hm-x-t"),
     { tooltip, label: "X" });
 const hmW1T = new MatrixHeatmap(document.getElementById("hm-w1t"),
@@ -63,8 +56,7 @@ const hmYT  = new ClusterStripHeatmap(document.getElementById("hm-yt"),
 const hmYS  = new ClusterStripHeatmap(document.getElementById("hm-ys"),
     { tooltip, label: "Y_S (Student)", clusterSize: 5, deadZone: 0.09 });
 
-// Cluster heatmaps under Manual Input — show the actual sigmoid output
-// of each network for the user-supplied X.
+// cluster heatmaps under manual input sigmoid output for user X
 const hmManualYT = new ClusterStripHeatmap(
     document.getElementById("manual-hm-yt"),
     { tooltip, label: "Manual Y_T", clusterSize: 5, deadZone: 0.09 });
@@ -74,9 +66,7 @@ const hmManualYS = new ClusterStripHeatmap(
 
 const lossChart = new LossChart(document.getElementById("loss-chart"));
 
-// ---------------------------------------------------------------------------
-// DOM references.
-// ---------------------------------------------------------------------------
+// dom refs
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -84,9 +74,8 @@ const els = {
     archMeta:     $("arch-meta"),
     runBtn:           $("run-btn"),
     stopBtn:          $("stop-btn"),
-    presetFheFastBtn: $("preset-fhe-fast-btn"),
-    presetFheBtn:     $("preset-fhe-btn"),
-    presetFheRichBtn: $("preset-fhe-rich-btn"),
+    presetFheConservativeBtn: $("preset-fhe-conservative-btn"),
+    presetFheBalancedBtn:     $("preset-fhe-balanced-btn"),
     runProgress:      $("run-progress"),
     runStatus:        $("run-status"),
     configForm:   $("config-form"),
@@ -118,42 +107,36 @@ const els = {
     stressHistCap:$("stress-hist-caption"),
 };
 
-// ---------------------------------------------------------------------------
-// Status pill.
-// ---------------------------------------------------------------------------
+// status pill
 
 function setStatus(label, kind) {
     els.statusPill.textContent = label;
     els.statusPill.className = `pill pill-${kind}`;
 }
 
-// ---------------------------------------------------------------------------
-// Boot.
-// ---------------------------------------------------------------------------
+// boot
 
 async function boot() {
     bindControls();
     bindRangeOutputs();
     syncDerivedValues();
 
-    // First check if a training is currently in progress (e.g. browser was
-    // reloaded mid-run by another tab) — re-attach pollers if so. This
-    // prevents the pill from showing "Ready" while training is actually live.
+    // check if run is in progress like reload mid run
+    // if so reattach pollers so pill is correct
     let liveStatus = null;
     try {
         liveStatus = await getTrainingStatus();
-    } catch (_e) { /* 404 / connection error → treat as no active run */ }
+    } catch (_e) { /* 404 or conn err treat as no active run */ }
 
     if (liveStatus && liveStatus.running) {
-        state.runEpochs      = liveStatus.total_epochs;
         state.seenRunning    = true;     // status already says running
-        state.autoStressDone = true;     // do NOT auto-stress on a foreign run
+        state.autoStressDone = true;     // do not auto stress a foreign run
         els.runBtn.disabled  = true;
         setStatus("Processing", "processing");
         els.runStatus.classList.remove("error", "ok");
         els.runStatus.textContent =
             `Re-attached to live training (epoch ${liveStatus.epoch}/${liveStatus.total_epochs}).`;
-        startPolling({ epochs: liveStatus.total_epochs });
+        startPolling();
         startStatusPolling({ epochs: liveStatus.total_epochs });
     }
 
@@ -163,7 +146,7 @@ async function boot() {
             state.data = data;
             initialiseUIFromData();
         } else {
-            // No log AND no in-progress run -> idle state.
+            // no log no run go idle
             if (!liveStatus || !liveStatus.running) {
                 setStatus("No training data", "idle");
                 els.runStatus.textContent =
@@ -177,15 +160,13 @@ async function boot() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Slider <-> output sync, derived value (output_dim), input mirroring.
-// ---------------------------------------------------------------------------
+// slider output sync derived value output_dim input mirror
 
 function bindRangeOutputs() {
     const ranges = els.configForm.querySelectorAll('input[type="range"]');
     ranges.forEach(r => {
         const fmt = (val) => {
-            // Float-stepped sliders need decimal preservation.
+            // float stepped sliders need decimals
             if (r.step.includes(".")) {
                 const decimals = r.step.split(".")[1].length;
                 return parseFloat(val).toFixed(decimals);
@@ -193,25 +174,19 @@ function bindRangeOutputs() {
             return String(val);
         };
 
-        // Bidirectional sync: slider ⇄ number input (id = `${range_id}_num`).
+        // two way sync slider <-> num input id = `${range_id}_num`
         const num = document.getElementById(`${r.id}_num`);
         if (num) {
-            // Suppress the slider→num write-back while the user is actively
-            // typing in `num`.  Without this flag, typing "1" first lands on
-            // the slider as "2" (min/step clamp), the slider's `input` event
-            // then writes "2" back into the number input, and the user can
-            // never finish typing "16".
+            // skip slider to num write back while user is typing in num
+            // otherwise typing 1 lands on slider as 2 due to clamp and overwrites the num field
             let numEditing = false;
 
             r.addEventListener("input", () => {
                 if (numEditing) return;
                 num.value = fmt(r.value);
             });
-            // Number → slider: drive the slider visually (will clamp to its
-            // own range/step), and notify any other input listeners (e.g.
-            // syncDerivedValues for output_dim).  We do NOT clamp `num.value`
-            // here — destructive validation runs on blur instead, so the
-            // user can finish typing multi-digit numbers.
+            // num to slider drives slider visually fires input so other listeners run like syncDerivedValues
+            // do NOT clamp num.value here clamping runs on blur so user can finish typing
             num.addEventListener("input", () => {
                 numEditing = true;
                 const v = parseFloat(num.value);
@@ -221,18 +196,17 @@ function bindRangeOutputs() {
                 }
                 numEditing = false;
             });
-            // On blur, restore a valid value if the field is empty / NaN
-            // (we never silently overwrite a parseable number, even if it
-            // sits outside the slider's range — paramVal() trusts `num`).
+            // on blur restore valid value if empty or NaN
+            // never silently overwrite a parseable number even if outside slider range
             num.addEventListener("blur", () => {
                 const v = parseFloat(num.value);
                 if (!Number.isFinite(v)) num.value = fmt(r.value);
             });
-            // Initial sync.
+            // initial sync
             num.value = fmt(r.value);
         }
 
-        // Legacy: any <output for="ID"> still gets the value too.
+        // legacy any output for=ID also gets the value
         const out = els.configForm.querySelector(`output[for="${r.id}"]`);
         if (out) {
             const update = () => { out.value = fmt(r.value); };
@@ -241,16 +215,14 @@ function bindRangeOutputs() {
         }
     });
 
-    // Derived: output_dim = output_clusters * cluster_size.
+    // derived output_dim = output_clusters * cluster_size
     const oc = els.configForm.elements.output_clusters;
     const cs = els.configForm.elements.cluster_size;
     [oc, cs].forEach(el => el.addEventListener("input", syncDerivedValues));
 
-    // samples_to_log is logically bounded by batch_size: rows beyond batch
-    // get clipped server-side anyway.  Mirror that constraint, but only
-    // *after* the user finishes editing — never destructively while they
-    // are still typing (e.g. typing "16" should not clamp samples to 1
-    // when the in-progress value is "1").
+    // samples_to_log bounded by batch_size rows beyond batch get clipped server side anyway
+    // mirror that constraint but only AFTER user finishes editing
+    // never clamp while still typing
     const batch      = els.configForm.elements.batch_size;
     const batchNum   = document.getElementById("batch_size_num");
     const samples    = els.configForm.elements.samples_to_log;
@@ -270,11 +242,10 @@ function bindRangeOutputs() {
             if (samplesOut) samplesOut.value = String(b);
         }
     }
-    // Slider drag commits with `change` on release.  Number input commits
-    // with `blur` (focus loss) — the more natural "I'm done typing" signal.
+    // slider drag commits on change number commits on blur thats the natural done typing signal
     batch.addEventListener("change", clampSamplesToBatch);
     if (batchNum) batchNum.addEventListener("blur", clampSamplesToBatch);
-    clampSamplesToBatch();   // apply on first paint
+    clampSamplesToBatch();   // first paint
 }
 
 function syncDerivedValues() {
@@ -284,26 +255,97 @@ function syncDerivedValues() {
     els.outputDimDisplay.value = String(dim);
 }
 
-// ---------------------------------------------------------------------------
-// Controls.
-// ---------------------------------------------------------------------------
+// controls
 
 function bindControls() {
     els.configForm.addEventListener("submit", onRun);
     els.stopBtn.addEventListener("click", onStop);
-    els.presetFheFastBtn.addEventListener("click", applyFhePresetFast);
-    els.presetFheBtn.addEventListener("click", applyFhePreset);
-    els.presetFheRichBtn.addEventListener("click", applyFhePresetRich);
+    els.presetFheConservativeBtn.addEventListener("click", applyFhePresetConservative);
+    els.presetFheBalancedBtn.addEventListener("click", applyFhePresetBalanced);
     els.epochSlider.addEventListener("input", onEpochChange);
     els.batchSelect.addEventListener("change", onBatchChange);
     els.showWeights.addEventListener("change", onShowWeightsChange);
     els.manualForm.addEventListener("submit", onManualTest);
     els.manualFill.addEventListener("click", onFillX);
     els.stressForm.addEventListener("submit", onStressRun);
+
+    // 3 way encryption radio plaintext sim real ckks
+    // mirrors to two hidden fields server reads use_fhe and simulate_fhe_noise
+    const radios = els.configForm.querySelectorAll('input[name="encryption_mode"]');
+    radios.forEach(r => r.addEventListener("change", onEncryptionModeChange));
+    // init hidden mirrors from default checked radio
+    onEncryptionModeChange();
+
+    // live topbar meta update reflects current form values
+    els.configForm.addEventListener("input",  updateTopbarMetaFromForm);
+    els.configForm.addEventListener("change", updateTopbarMetaFromForm);
+    updateTopbarMetaFromForm();
 }
 
-// Prefer the typed-in number input if present (it can hold values outside
-// the slider's range, e.g. epochs > 30000); fall back to the slider value.
+// render archMeta as compact line of live form values
+//   T(in->h->OD) S(in->h) 16x5 b=4 ep=80 dz=0.08 a=0.7 FHE
+function updateTopbarMetaFromForm() {
+    const tin  = paramVal("T_input");
+    const th   = paramVal("T_hidden");
+    const sin  = tin;                                  // mirrored
+    const sh   = paramVal("S_hidden");
+    const oc   = parseInt(paramVal("output_clusters"), 10) || 0;
+    const cs   = parseInt(paramVal("cluster_size"),    10) || 0;
+    const od   = oc * cs;
+    const b    = paramVal("batch_size");
+    const ep   = paramVal("epochs");
+    const dz   = paramVal("dz");
+    const a    = paramVal("bimodality_alpha");
+    const checked = els.configForm.querySelector('input[name="encryption_mode"]:checked');
+    const mode = checked ? checked.value : "real_fhe";
+    const conf = !!els.configForm.elements.key_confirmation?.checked;
+
+    const sep = '<span class="meta-sep">·</span>';
+    const modeTxt = ({
+        real_fhe:  '<span class="meta-val fhe-on">FHE</span>',
+        simulated: '<span class="meta-val fhe-on">FHE-sim</span>',
+        plaintext: '<span class="meta-val fhe-off">plaintext</span>',
+    })[mode] || mode;
+    const confTxt = conf
+        ? '<span class="meta-val">+hash</span>'
+        : '<span class="meta-val fhe-off">no-hash</span>';
+
+    els.archMeta.innerHTML =
+        `T(${tin}→${th}→${od})${sep}` +
+        `S(${sin}→${sh}→${od})${sep}` +
+        `<span class="meta-key">clusters</span> ${oc}×${cs}${sep}` +
+        `<span class="meta-key">b</span>=${b} <span class="meta-key">ep</span>=${ep}${sep}` +
+        `<span class="meta-key">dz</span>=${dz} <span class="meta-key">α</span>=${a}${sep}` +
+        `${modeTxt}${sep}${confTxt}`;
+}
+
+function onEncryptionModeChange() {
+    const checked = els.configForm.querySelector('input[name="encryption_mode"]:checked');
+    const mode = checked ? checked.value : "real_fhe";
+    const useFhe = els.configForm.elements.use_fhe;
+    const noise  = els.configForm.elements.simulate_fhe_noise;
+    if (mode === "real_fhe") {
+        useFhe.value = "true";
+        noise.value  = "0";
+    } else if (mode === "simulated") {
+        useFhe.value = "false";
+        noise.value  = "0.001";  // calibrated to real ckks noise
+    } else {  // plaintext
+        useFhe.value = "false";
+        noise.value  = "0";
+    }
+}
+
+function setEncryptionMode(mode) {
+    const radio = els.configForm.querySelector(`input[name="encryption_mode"][value="${mode}"]`);
+    if (radio) {
+        radio.checked = true;
+        radio.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+}
+
+// prefer typed num input if present can hold values outside slider range like epochs > 30000
+// else fall back to slider
 function paramVal(id) {
     const num = document.getElementById(`${id}_num`);
     if (num && num.value !== "") return num.value;
@@ -311,8 +353,8 @@ function paramVal(id) {
 }
 
 function readConfig() {
-    // Build the JSON payload for /api/run_training.  S_input is mirrored
-    // from T_input so both networks see the same X, per protocol design.
+    // build json payload for run_training
+    // S_input mirrors T_input so both nets see same X
     const T_input         = parseInt  (paramVal("T_input"),         10);
     const cluster_size    = parseInt  (paramVal("cluster_size"),    10);
     const output_clusters = parseInt  (paramVal("output_clusters"), 10);
@@ -330,7 +372,10 @@ function readConfig() {
         warmup_frac:    parseFloat(paramVal("warmup_frac")),
         samples_to_log: parseInt  (paramVal("samples_to_log"), 10),
         snapshot_count: parseInt  (paramVal("snapshot_count"), 10),
-        use_fhe:        !!els.configForm.elements.use_fhe.checked,
+        use_fhe:             els.configForm.elements.use_fhe.value === "true",
+        bimodality_alpha:    parseFloat(paramVal("bimodality_alpha")) || 0,
+        simulate_fhe_noise:  parseFloat(els.configForm.elements.simulate_fhe_noise.value) || 0,
+        key_confirmation:    !!els.configForm.elements.key_confirmation?.checked,
     };
 }
 
@@ -339,7 +384,7 @@ async function onRun(e) {
     const params = readConfig();
 
     if (params.output_dim % params.cluster_size !== 0) {
-        flagError(els.runStatus, "output_dim must be divisible by cluster_size.");
+        flagError(els.runStatus, "output_dim must be divisible by cluster_size");
         return;
     }
 
@@ -349,14 +394,10 @@ async function onRun(e) {
     els.runStatus.textContent = "Submitting training request...";
     els.runProgress.hidden = true;
     els.runProgress.textContent = "";
-    // Reset per-run guards so completion detection is not contaminated
-    // by the *previous* run's status file (running:false stays on disk
-    // between runs).
+    // reset per run guards so completion detection is clean of last runs status
     state.autoStressDone  = false;
     state.seenRunning     = false;
-    state.runEpochs       = params.epochs;
-    state.runSubmittedAt  = Date.now();   // ms epoch — used by status tick
-                                          // to spot completed_at > submit
+    state.runSubmittedAt  = Date.now();   // ms epoch used by status tick
     state.runPid          = null;
 
     try {
@@ -364,12 +405,12 @@ async function onRun(e) {
         state.runPid = resp.pid;
         els.runStatus.textContent =
             `Training subprocess started (pid=${resp.pid}). Polling for snapshots...`;
-        // Reveal Stop button + progress line.
+        // show stop btn and progress line
         els.stopBtn.hidden    = false;
         els.stopBtn.disabled  = false;
         els.runProgress.hidden = false;
-        els.runProgress.textContent = `epoch 0/${params.epochs} — starting…`;
-        startPolling(params);
+        els.runProgress.textContent = `epoch 0/${params.epochs} - starting…`;
+        startPolling();
         startStatusPolling(params);
     } catch (err) {
         flagError(els.runStatus, `Run failed: ${err.message}`);
@@ -378,64 +419,111 @@ async function onRun(e) {
     }
 }
 
-// FHE presets — three variants tuned for different wall-time budgets.
+// fhe conservative preset truly converged ~2 bits per trial
 //
-// Common shared-secret recipe (verified by tests/test_key_agreement_e2e.cpp):
-//   T_in=4, T_h=16  — wider Teacher is free in FHE (Teacher is plaintext
-//                      server-side); spreads sigmoid outputs out of dead-zone
-//   S_h=16, Y=20    — modest Student capacity, cheap mul_cipher count
-//   batch=4         — halves per-step FHE cost vs batch=8 with marginal
-//                      yield loss
-//   dz=0.10         — verified mismatch-safe at 200+ epochs
+// recipe validated 2026-05-05 on 1500 random seeds 50K stress trials each
+//   T_h=16 S_h=48 OD=30 cs=5 b=4 ep=230 dz=0.08 alpha=0.3
+//   final_loss ~0.11 converged ~18.8 min fhe
 //
-// Per-preset epochs:
-//   fast:    ep=200  → ~5  min, ~1.79 shared/trial (sweep)
-//   default: ep=400  → ~10 min, ~1.97 shared/trial (sweep)
-//   rich:    ep=800  → ~20 min, ~2.07 shared/trial (sweep)
-function applyFhePresetVariant(epochs, label, expectedYield) {
+// measured 100% TRUE FULL on 1500 random seeds mm_rate=0
+//          bits >= 2 on 100% of sessions
+//          best when reliability matters more than yield
+function applyFhePresetConservative() {
     const preset = {
-        T_input:         4,
-        T_hidden:        16,
-        S_hidden:        16,
-        output_clusters: 4,
-        cluster_size:    5,
-        batch_size:      4,
-        epochs:          epochs,
-        dz:              0.10,
-        lr_max:          0.01,
-        warmup_frac:     0.05,
-        samples_to_log:  2,
-        snapshot_count:  20,
+        T_input:           4,
+        T_hidden:          16,
+        S_hidden:          48,
+        output_clusters:   6,
+        cluster_size:      5,
+        batch_size:        4,
+        epochs:            230,
+        dz:                0.08,
+        lr_max:            0.01,
+        warmup_frac:       0.05,
+        bimodality_alpha:  0.3,
+        simulate_fhe_noise: 0,
+        samples_to_log:    2,
+        snapshot_count:    20,
     };
     for (const [name, val] of Object.entries(preset)) {
         const el = els.configForm.elements[name];
         if (!el) continue;
         el.value = String(val);
         el.dispatchEvent(new Event("input", { bubbles: true }));
-        // Mirror to the matching number input so numeric values outside
-        // slider range still apply (e.g. epochs=400 if slider min was 100).
+        // mirror to num input so values outside slider range still apply like epochs=230
         const num = document.getElementById(`${name}_num`);
         if (num) {
             num.value = String(val);
             num.dispatchEvent(new Event("input", { bubbles: true }));
         }
     }
-    const fhe = els.configForm.elements.use_fhe;
-    if (fhe) {
-        fhe.checked = true;
-        fhe.dispatchEvent(new Event("change", { bubbles: true }));
+    setEncryptionMode("real_fhe");
+    const conf = els.configForm.elements.key_confirmation;
+    if (conf) {
+        conf.checked = true;
+        conf.dispatchEvent(new Event("change", { bubbles: true }));
     }
     syncDerivedValues();
     els.runStatus.classList.remove("error", "ok");
     els.runStatus.textContent =
-        `${label} applied (T=4/16 S=16 Y=20 B=4 ep=${epochs}, ~${expectedYield} shared bits/trial, 0 mismatches). Press Run Training.`;
+        "FHE conservative preset applied (T=4/16 S=48 OD=30 cs=5 B=4 ep=230 dz=0.08 alpha=0.3, ~18.8 min FHE, ~2.34 shared bits/trial, truly converged loss=0.11, 100% TRUE FULL on 1500 random seeds). Press Run Training.";
 }
 
-function applyFhePresetFast()    { applyFhePresetVariant(200, "FHE fast preset",  "1.79"); }
-function applyFhePreset()        { applyFhePresetVariant(400, "FHE preset",        "1.97"); }
-function applyFhePresetRich()    { applyFhePresetVariant(800, "FHE rich preset",  "2.07"); }
+// fhe balanced preset bimodality driven more bits per session
+//
+// recipe validated 2026-05-06 on 4 real fhe seeds 1M+ stress trials each
+//   T_h=16 S_h=48 OD=80 cs=5 b=4 ep=80 dz=0.08 alpha=0.7
+//   final_loss ~1.09 not converged in usual sense ~17.3 min fhe
+//
+// real fhe measured seeds 1 7 100 538
+//   mean_bits per trial 5.39 avg target >= 4
+//   success_first_try 72.85% avg range 63 to 79%
+//   silent_fail 0 of 200000 sessions key_confirmation REQUIRED
+//   after 10 X_key resamples >= 99.99979% success
+//
+// trade off bits per session vs convergence quality
+// relies on bimodality plus cs=5 voting plus sha256 hash confirm
+function applyFhePresetBalanced() {
+    const preset = {
+        T_input:           4,
+        T_hidden:          16,
+        S_hidden:          48,
+        output_clusters:   16,
+        cluster_size:      5,
+        batch_size:        4,
+        epochs:            80,
+        dz:                0.08,
+        lr_max:            0.01,
+        warmup_frac:       0.05,
+        bimodality_alpha:  0.7,
+        simulate_fhe_noise: 0,
+        samples_to_log:    2,
+        snapshot_count:    20,
+    };
+    for (const [name, val] of Object.entries(preset)) {
+        const el = els.configForm.elements[name];
+        if (!el) continue;
+        el.value = String(val);
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        const num = document.getElementById(`${name}_num`);
+        if (num) {
+            num.value = String(val);
+            num.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+    }
+    setEncryptionMode("real_fhe");
+    const conf = els.configForm.elements.key_confirmation;
+    if (conf) {
+        conf.checked = true;
+        conf.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    syncDerivedValues();
+    els.runStatus.classList.remove("error", "ok");
+    els.runStatus.textContent =
+        "FHE balanced preset applied (T=4/16 S=48 OD=80 cs=5 B=4 ep=80 dz=0.08 alpha=0.7, ~17.3 min FHE, mean 5.39 bits/trial across 4 random seeds; 73% first-try + 99.99979% after 10 retries via key confirmation; loss ~1.09 - bimodality-driven, NOT traditionally converged). Press Run Training.";
+}
 
-// Stop button handler — POST /api/stop_training with the stored pid.
+// stop btn POST stop_training with stored pid
 async function onStop() {
     if (!state.runPid) return;
     els.stopBtn.disabled = true;
@@ -443,9 +531,7 @@ async function onStop() {
     els.runStatus.textContent = `Stopping pid=${state.runPid}...`;
     try {
         await postStopTraining(state.runPid);
-        // Don't tear down polling here — the status poll will pick up the
-        // running:false marker the server just wrote and finalise the UI
-        // through the existing completion path.
+        // do not tear down polling here status poll picks up running:false marker and finalises ui
         els.runStatus.textContent = `Stop signal sent (pid=${state.runPid}). Waiting for confirmation...`;
     } catch (err) {
         flagError(els.runStatus, `Stop failed: ${err.message}`);
@@ -459,14 +545,12 @@ function flagError(node, msg) {
     node.classList.remove("ok");
 }
 
-// ---------------------------------------------------------------------------
-// Polling.
-// ---------------------------------------------------------------------------
+// polling
 
-function startPolling(params) {
+function startPolling() {
     if (state.polling) clearInterval(state.polling);
-    // The pill state is set by the caller (onRun or boot); startPolling
-    // itself is purely a snapshot-data refresher and must not flip the pill.
+    // pill state set by caller onRun or boot
+    // startPolling just refreshes snapshot data does not flip pill
 
     let lastEpoch = -1;
 
@@ -489,10 +573,8 @@ function startPolling(params) {
                 els.runStatus.textContent =
                     `Snapshots: ${newCount}. Latest epoch: ${observedEpoch}.`;
             }
-            // Completion is detected by startStatusPolling (which watches
-            // training_status.running), not here — the training_log.json
-            // is rewritten only at the very end of the run, so it is an
-            // unreliable progress signal during training.
+            // completion detection lives in startStatusPolling not here
+            // training_log.json only rewritten at very end so not reliable progress signal
         } catch (err) {
             console.warn("poll error", err);
         }
@@ -507,25 +589,22 @@ function stopAllPolling() {
     if (state.statusPolling) { clearInterval(state.statusPolling); state.statusPolling = null; }
 }
 
-// ---------------------------------------------------------------------------
-// Status poll — /api/training_status, 500ms cadence.
+// status poll training_status at 500ms
 //
-// Drives BOTH (a) completion detection ("Ready" pill, stops snapshot polling,
-// re-enables Run button) and (b) auto-trigger of the post-sync stress test.
+// drives both completion detection ready pill stops snapshot polling re enables run btn
+// and auto trigger of post sync stress test
 //
-// We cannot trust the very first running:false reading because the previous
-// run's status file persists between runs. We require a running:true sighting
-// before treating a subsequent running:false as "this run is done".
+// cant trust first running:false reading because last runs status file persists between runs
+// require running:true sighting first then later running:false means this run is done
 //
-// Safety nets to keep request volume bounded:
-//   - HARD CAP: stop after MAX_TICKS regardless (~10 min wall time).
-//   - Stop after N consecutive 404s (status file vanished mid-run).
-// ---------------------------------------------------------------------------
+// safety nets to bound request volume
+//   HARD CAP stop after HARD_CEILING_MS no matter what
+//   stop after N consecutive 404s status file vanished mid run
 
 const STATUS_POLL_MS      = 500;
-const STATUS_MAX_404      = 30;            // 30 * 500ms = 15s of consecutive 404s
-const STALL_TIMEOUT_MS    = 10 * 60 * 1000; // 10 min of no epoch advance = stuck
-const HARD_CEILING_MS     = 4  * 60 * 60 * 1000; // 4 h hard ceiling, no matter what
+const STATUS_MAX_404      = 30;            // 30 * 500ms = 15s of 404s
+const STALL_TIMEOUT_MS    = 10 * 60 * 1000; // 10 min no epoch advance = stuck
+const HARD_CEILING_MS     = 4  * 60 * 60 * 1000; // 4h hard ceiling
 
 function startStatusPolling(_params) {
     if (state.statusPolling) clearInterval(state.statusPolling);
@@ -551,14 +630,13 @@ function startStatusPolling(_params) {
 
     const tick = async () => {
         const now = Date.now();
-        // Hard ceiling — last-resort fuse if everything else fails.
+        // hard ceiling last resort fuse
         if (now - startedAt > HARD_CEILING_MS) {
             giveUp(`hard ceiling reached (${(HARD_CEILING_MS/3600000)|0} h)`);
             return;
         }
-        // Stall detector — give up if epoch hasn't advanced in STALL_TIMEOUT_MS.
-        // This adapts automatically to any wall-clock budget: a slow but
-        // *progressing* training is fine; a frozen subprocess is not.
+        // stall detector give up if epoch hasnt advanced
+        // adapts to any wall clock budget slow but progressing is fine frozen subprocess is not
         if (now - lastProgressAt > STALL_TIMEOUT_MS) {
             giveUp(`no epoch advance for ${(STALL_TIMEOUT_MS/60000)|0} min (subprocess likely dead)`);
             return;
@@ -574,14 +652,14 @@ function startStatusPolling(_params) {
             }
             consecutive404 = 0;
             if (s.running) state.seenRunning = true;
-            // Refresh stall timer whenever we see real forward progress.
+            // reset stall timer on forward progress
             if (typeof s.epoch === "number" && s.epoch > lastProgressEpoch) {
                 lastProgressEpoch = s.epoch;
                 lastProgressAt    = now;
             }
 
-            // Live progress while training: epoch counter + loss + elapsed.
-            // The eta_sec field is best-effort; only render it when present.
+            // live progress epoch loss elapsed
+            // eta_sec is best effort render only when present
             if (s.running) {
                 const eta = (s.eta_sec != null && Number.isFinite(s.eta_sec))
                     ? `, ETA ${s.eta_sec.toFixed(0)}s`
@@ -596,22 +674,20 @@ function startStatusPolling(_params) {
                     `, elapsed ${s.elapsed_sec.toFixed(1)}s${eta}`;
             }
 
-            // Treat completed_at > runSubmittedAt as definitive proof that
-            // OUR run finished — even if we never observed running:true
-            // (e.g. the tab was background-throttled through the entire
-            // training window and missed the transition).
+            // treat completed_at > runSubmittedAt as proof OUR run finished
+            // tab might be background throttled and miss the running:true window
             const completedAfterSubmit = !s.running && s.completed_at &&
                 state.runSubmittedAt &&
                 Date.parse(s.completed_at) >= state.runSubmittedAt - 1000;
 
             if (!s.running && (state.seenRunning || completedAfterSubmit)) {
-                // Training has finished (either naturally or via Stop).
-                // Refresh snapshot data once, then wind everything down.
+                // training finished naturally or via stop
+                // refresh snapshots once then wind down
                 stopAllPolling();
                 try {
                     const data = await getTrainingData();
                     if (data) { state.data = data; initialiseUIFromData(); }
-                } catch (e) { /* ignore — UI is already best-effort */ }
+                } catch (e) { /* ignore ui best effort */ }
                 els.runBtn.disabled = false;
                 els.stopBtn.hidden = true;
                 els.stopBtn.disabled = false;
@@ -626,9 +702,7 @@ function startStatusPolling(_params) {
                     `(loss=${s.loss.toExponential(2)}, ` +
                     `elapsed=${s.elapsed_sec.toFixed(1)}s).`;
                 if (!state.autoStressDone && !s.stopped) {
-                    // Skip the auto-stress test on user-initiated stop —
-                    // the training was cut short, the snapshot probably
-                    // isn't a converged keypair yet.
+                    // skip auto stress on user stop training was cut short
                     state.autoStressDone = true;
                     autoRunStressTest();
                 }
@@ -641,9 +715,7 @@ function startStatusPolling(_params) {
     state.statusPolling = setInterval(tick, STATUS_POLL_MS);
 }
 
-// ---------------------------------------------------------------------------
-// Re-initialise after fresh data arrives.
-// ---------------------------------------------------------------------------
+// init after fresh data arrives
 
 function initialiseUIFromData() {
     const { metadata, snapshots } = state.data;
@@ -652,11 +724,11 @@ function initialiseUIFromData() {
         return;
     }
 
-    // Configure cluster-strip heatmaps with the trained-network's params.
+    // configure cluster strip heatmaps with trained params
     hmYT.setParams({ clusterSize: metadata.cluster_size, deadZone: metadata.dz });
     hmYS.setParams({ clusterSize: metadata.cluster_size, deadZone: metadata.dz });
 
-    // Epoch slider snaps to recorded snapshot indices.
+    // epoch slider snaps to recorded snapshot indices
     els.epochSlider.disabled = false;
     els.epochSlider.min = 0;
     els.epochSlider.max = snapshots.length - 1;
@@ -664,13 +736,13 @@ function initialiseUIFromData() {
     els.epochSlider.value = snapshots.length - 1;
     state.snapshotIndex = snapshots.length - 1;
 
-    // Batch dropdown: range over the first samples_logged batch rows.
+    // batch dropdown range over first samples_logged batch rows
     const samplesLogged = metadata.samples_logged ||
         (snapshots[0].samples ? snapshots[0].samples.length : 1);
     populateBatchSelect(samplesLogged);
     state.batchIndex = Math.min(state.batchIndex, samplesLogged - 1);
 
-    // Loss curve.
+    // loss curve
     const points = snapshots.map(s => ({ epoch: s.epoch, loss: s.loss }));
     lossChart.setData(points);
     if (points.length) {
@@ -679,15 +751,11 @@ function initialiseUIFromData() {
         els.lossLast.textContent = losses[losses.length - 1].toExponential(3);
     }
 
-    // Architecture readout in the topbar.
-    els.archMeta.textContent =
-        `T(${metadata.T_input}->${metadata.T_hidden}->${metadata.output_dim}) | ` +
-        `S(${metadata.S_input}->${metadata.S_hidden}->${metadata.output_dim}) | ` +
-        `clusters=${metadata.output_dim / metadata.cluster_size} x ${metadata.cluster_size} | ` +
-        `dz=${metadata.dz}`;
+    // refresh topbar after loading metadata so it matches viewed log
+    // updateTopbarMetaFromForm picks up new values via input events fired by setting value
+    updateTopbarMetaFromForm();
 
-    // Only set "Ready" when no polling is active AND no run is being
-    // monitored — otherwise leave the current pill (Processing) alone.
+    // only set Ready when no polling and no run being monitored else leave current pill alone
     if (!state.polling && !state.statusPolling) {
         setStatus("Ready", "ready");
     }
@@ -705,9 +773,7 @@ function populateBatchSelect(n) {
     els.batchSelect.value = String(state.batchIndex);
 }
 
-// ---------------------------------------------------------------------------
-// Event handlers.
-// ---------------------------------------------------------------------------
+// event handlers
 
 function onEpochChange() {
     state.snapshotIndex = parseInt(els.epochSlider.value, 10);
@@ -725,9 +791,7 @@ function onShowWeightsChange() {
     if (state.showWeights) renderWeights();
 }
 
-// ---------------------------------------------------------------------------
-// Render — single source of truth.
-// ---------------------------------------------------------------------------
+// render single source of truth
 
 function render() {
     if (!state.data) return;
@@ -741,17 +805,17 @@ function render() {
         ? Math.floor(sample.Y_true.length / metadata.cluster_size) : 0;
     els.dimYT.textContent = `[${sample.Y_true.length} = ${nClusters} × ${metadata.cluster_size}]`;
     els.dimYS.textContent = `[${sample.Y_pred.length} = ${nClusters} × ${metadata.cluster_size}]`;
-    if (els.dimXT) els.dimXT.textContent = sample.X   ? `[${sample.X.length}]`   : "[—]";
-    if (els.dimXS) els.dimXS.textContent = sample.X   ? `[${sample.X.length}]`   : "[—]";
-    if (els.dimHT) els.dimHT.textContent = sample.H_T ? `[${sample.H_T.length}]` : "[—]";
-    if (els.dimHS) els.dimHS.textContent = sample.H_raw ? `[${sample.H_raw.length}]` : "[—]";
+    if (els.dimXT) els.dimXT.textContent = sample.X   ? `[${sample.X.length}]`   : "[-]";
+    if (els.dimXS) els.dimXS.textContent = sample.X   ? `[${sample.X.length}]`   : "[-]";
+    if (els.dimHT) els.dimHT.textContent = sample.H_T ? `[${sample.H_T.length}]` : "[-]";
+    if (els.dimHS) els.dimHS.textContent = sample.H_raw ? `[${sample.H_raw.length}]` : "[-]";
     const W = snap.weights || {};
     els.dimW1T.textContent = matShape(W.W1_T);
     els.dimW2T.textContent = matShape(W.W2_T);
     els.dimW1S.textContent = matShape(W.W1);
     els.dimW2S.textContent = matShape(W.W2);
 
-    // Input X (shared) and per-network hidden activations — always rendered.
+    // input X shared and per net hidden activations always rendered
     if (sample.X) {
         hmXT.setData(sample.X);
         hmXS.setData(sample.X);
@@ -761,11 +825,11 @@ function render() {
     sample.H_T   ? hmHT.setData(sample.H_T)   : hmHT.clear();
     sample.H_raw ? hmHS.setData(sample.H_raw) : hmHS.clear();
 
-    // Cluster-strip outputs (always rendered).
+    // cluster strip outputs always rendered
     hmYT.setData(sigmoidArr(sample.Y_true));
     hmYS.setData(sigmoidArr(sample.Y_pred));
 
-    // Weight matrices — only when checkbox is on (heavy at v9 dimensions).
+    // weight matrices only when checkbox is on heavy at v9 dims
     if (state.showWeights) renderWeights();
 }
 
@@ -773,8 +837,7 @@ function renderWeights() {
     if (!state.data) return;
     const snap = state.data.snapshots[state.snapshotIndex];
     if (!snap) return;
-    // Older logs (pre-W2_T schema) may lack some keys — fall back to clear()
-    // rather than crashing on .setData(undefined).
+    // older logs may lack some keys fall back to clear instead of crashing on setData(undefined)
     const W = snap.weights || {};
     W.W1_T ? hmW1T.setData(W.W1_T) : hmW1T.clear();
     W.W2_T ? hmW2T.setData(W.W2_T) : hmW2T.clear();
@@ -783,13 +846,11 @@ function renderWeights() {
 }
 
 function matShape(mat) {
-    if (!mat || !mat.length) return "[—]";
+    if (!mat || !mat.length) return "[-]";
     return `[${mat.length} x ${mat[0].length}]`;
 }
 
-// ---------------------------------------------------------------------------
-// Manual input — POST /api/manual_test → render bit comparison strings.
-// ---------------------------------------------------------------------------
+// manual input POST manual_test then render bit comparison strings
 
 function onFillX() {
     if (!state.data) {
@@ -857,11 +918,8 @@ function parseVector(text) {
     return out;
 }
 
-/**
- * Render Teacher and Student bit strings on two aligned rows.  Each cluster
- * occupies one column: '1' or '0' if the side is confident there, '·' if
- * inside the dead zone.  Mismatches are coloured red.
- */
+// render teacher and student bit strings on two aligned rows
+// each cluster is one col 1 or 0 if confident . if dead zone mismatches red
 function renderManualResult(resp) {
     const setT = new Set(resp.idx_T);
     const setS = new Set(resp.idx_S);
@@ -873,7 +931,7 @@ function renderManualResult(resp) {
     ) + 1;
     const total = Math.max(nClusters, resp.shared_indices.length);
 
-    // Summary lives next to manual-status in the form column.
+    // summary lives next to manual status in form col
     const summaryClass = resp.match ? "match" : "mismatch";
     const summaryLabel = resp.match
         ? "ALL SHARED BITS AGREE"
@@ -887,7 +945,7 @@ function renderManualResult(resp) {
         `S_conf=${resp.n_confident_S} · ` +
         `miss=${resp.mismatches}</div>`;
 
-    // Bit strings — full-width row below heatmaps.
+    // bit strings full width row below heatmaps
     const rowT = [];
     const rowS = [];
     for (let c = 0; c < total; c++) {
@@ -904,8 +962,7 @@ function renderManualResult(resp) {
             <div><span class="row-label">S</span>${rowS.join("")}</div>
         </div>`;
 
-    // Render the two cluster heatmaps with the trained network's
-    // cluster_size / dead-zone so the dead-zone shading is accurate.
+    // render two cluster heatmaps with trained cluster_size and dz so dead zone shading is right
     const meta = state.data && state.data.metadata;
     if (meta) {
         hmManualYT.setParams({
@@ -926,12 +983,10 @@ function span(bit, mismatch) {
     return `<span class="${cls}">${bit}</span>`;
 }
 
-// ---------------------------------------------------------------------------
-// Stress test — POST /api/stress_test, render aggregated stats + histogram.
-// ---------------------------------------------------------------------------
+// stress test POST stress_test render aggregated stats and histogram
 
 function autoRunStressTest() {
-    // Trigger as if the user clicked the button.
+    // fire as if user clicked the btn
     const evt = new Event("submit", { cancelable: true });
     els.stressForm.dispatchEvent(evt);
 }
@@ -946,7 +1001,7 @@ async function onStressRun(e) {
     const seedRaw = els.stressSeed.value.trim();
     const seed = seedRaw === "" ? null : parseInt(seedRaw, 10);
     if (!Number.isFinite(n) || n < 1 || n > 10000) {
-        flagError(els.stressStatus, "n_trials must be in [1, 10000].");
+        flagError(els.stressStatus, "n_trials must be in [1, 10000]");
         return;
     }
     els.stressRun.disabled = true;
@@ -975,7 +1030,7 @@ async function onStressRun(e) {
 }
 
 function renderStressResult(r) {
-    const fmt2 = (x) => Number.isFinite(x) ? x.toFixed(2) : "—";
+    const fmt2 = (x) => Number.isFinite(x) ? x.toFixed(2) : "-";
     const total = r.total_clusters;
     const summary = `
         <div class="stress-summary-grid">
@@ -1041,7 +1096,7 @@ function renderStressResult(r) {
                     <td>${r.mismatches.min}</td>
                     <td>${r.mismatches.max}</td>
                     <td>${fmt2(r.mismatches.median)}</td>
-                    <td>—</td>
+                    <td>-</td>
                 </tr>
             </tbody>
         </table>
@@ -1071,8 +1126,16 @@ function drawHistogram(hist, mean, total) {
     const nBins = counts.length;
     const maxCount = Math.max(...counts, 1);
 
-    // Background grid (4 horizontal lines).
-    ctx.strokeStyle = "#21262d";
+    // resolve theme colors at draw time so palette swaps in styles.css just work
+    const css = getComputedStyle(document.documentElement);
+    const COL_GRID = css.getPropertyValue("--border-soft").trim() || "#1f1f1f";
+    const COL_BAR  = css.getPropertyValue("--accent").trim()      || "#4a9eff";
+    const COL_MEAN = css.getPropertyValue("--student").trim()     || "#f04747";
+    const COL_AX   = css.getPropertyValue("--border-strong").trim() || "#3a3a3a";
+    const COL_LBL  = css.getPropertyValue("--fg-dim").trim()      || "#a8a8a8";
+
+    // bg grid 4 horizontal lines
+    ctx.strokeStyle = COL_GRID;
     ctx.lineWidth = 1;
     ctx.beginPath();
     for (let i = 0; i <= 4; i++) {
@@ -1081,9 +1144,9 @@ function drawHistogram(hist, mean, total) {
     }
     ctx.stroke();
 
-    // Bars.
+    // bars blue accent
     const barW = plotW / nBins;
-    ctx.fillStyle = "#1f6feb";
+    ctx.fillStyle = COL_BAR;
     for (let i = 0; i < nBins; i++) {
         const h = (counts[i] / maxCount) * plotH;
         const x = padL + i * barW;
@@ -1091,36 +1154,34 @@ function drawHistogram(hist, mean, total) {
         ctx.fillRect(x + 1, y, Math.max(1, barW - 2), h);
     }
 
-    // Mean line.
+    // mean line red distinct from blue bars
     if (Number.isFinite(mean)) {
         const lo = bins[0], hi = bins[bins.length - 1];
         const x = padL + plotW * (mean - lo) / Math.max(1e-9, hi - lo);
-        ctx.strokeStyle = "#d29922";
+        ctx.strokeStyle = COL_MEAN;
         ctx.setLineDash([4, 3]);
         ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, padT + plotH); ctx.stroke();
         ctx.setLineDash([]);
     }
 
-    // Axes.
-    ctx.strokeStyle = "#30363d";
+    // axes
+    ctx.strokeStyle = COL_AX;
     ctx.beginPath();
     ctx.moveTo(padL, padT); ctx.lineTo(padL, H - padB);
     ctx.moveTo(padL, H - padB); ctx.lineTo(W - padR, H - padB);
     ctx.stroke();
 
-    // Labels.
-    ctx.fillStyle = "#9da7b3";
+    // labels
+    ctx.fillStyle = COL_LBL;
     ctx.font = "10px monospace";
     ctx.fillText(String(maxCount), 4, padT + 8);
     ctx.fillText("0", 4, H - padB + 4);
     ctx.fillText(`0`, padL, H - 6);
     ctx.fillText(`${total}`, W - padR - 18, H - 6);
-    ctx.fillStyle = "#d29922";
+    ctx.fillStyle = COL_MEAN;
     ctx.fillText(`mean ${mean.toFixed(1)}`, W - padR - 96, padT + 12);
 }
 
-// ---------------------------------------------------------------------------
-// Go.
-// ---------------------------------------------------------------------------
+// go
 
 boot();
