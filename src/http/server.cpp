@@ -136,6 +136,9 @@ struct TrainingParams {
     double simulate_fhe_noise = 0.0;   // use_fhe=false + this >0 = plain + gaussian noise (fast proxy)
     bool key_confirmation = false;     // when true append --key-confirmation N after training
     long key_confirmation_trials = 10000;
+    bool seed_override = false;        // set if UI provided explicit seeds, otherwise keep CLI defaults
+    std::uint64_t teacher_seed = 0;
+    std::uint64_t bfa_seed = 0;
 };
 
 // parse + validate POST body, on fail err describes missing or bad field returns false
@@ -240,6 +243,21 @@ bool parse_training_params(const json& body, TrainingParams& out, std::string& e
         }
         out.use_fhe = body["use_fhe"].get<bool>();
     }
+    // optional explicit seeds, must come as a pair if provided
+    auto need_seed = [&](const char* name, std::uint64_t& dst) -> bool {
+        if (!body.contains(name)) return true;
+        const auto& v = body.at(name);
+        if (!v.is_number_integer() && !v.is_number_unsigned()) {
+            err = std::string("field must be uint: ") + name; return false;
+        }
+        long long signed_val = v.get<long long>();
+        if (signed_val < 0) { err = std::string("field must be non-negative: ") + name; return false; }
+        dst = static_cast<std::uint64_t>(signed_val);
+        out.seed_override = true;
+        return true;
+    };
+    if (!need_seed("teacher_seed", out.teacher_seed)) return false;
+    if (!need_seed("bfa_seed",     out.bfa_seed))     return false;
     return true;
 }
 
@@ -294,6 +312,11 @@ std::vector<std::string> build_cmd_argv(const fs::path& benchmark,
     }
 
     if (p.use_fhe) a.emplace_back("--use-fhe");
+
+    if (p.seed_override) {
+        push("--teacher-seed", std::to_string(p.teacher_seed));
+        push("--bfa-seed",     std::to_string(p.bfa_seed));
+    }
     return a;
 }
 
@@ -872,8 +895,8 @@ void handle_post_stress_test(const ServerConfig& cfg,
         }
         n_trials = body["n_trials"].get<long>();
     }
-    if (n_trials < 1 || n_trials > 1000000) {
-        send_error(res, 422, "n_trials out of range [1, 1000000]");
+    if (n_trials < 1) {
+        send_error(res, 422, "n_trials must be >= 1");
         return;
     }
     if (body.contains("seed") && !body["seed"].is_null()) {
@@ -920,9 +943,19 @@ void handle_post_stress_test(const ServerConfig& cfg,
     std::vector<double> n_conf_T(n_trials), n_conf_S(n_trials);
     std::vector<long>   n_shared(n_trials), mismatches_v(n_trials);
     long perfect = 0, total_mismatches = 0, total_shared_bits = 0;
+    // sha-256 confirmation simulation per trial
+    // dropped:     hex_key(bits_T) != hex_key(bits_S) protocol would retry
+    // silent_fail: hashes match but bits differ sha-256 collision astronomically rare
+    long hash_dropped = 0, hash_silent_fail = 0;
+
+    std::vector<int> bits_T_shared, bits_S_shared;
+    bits_T_shared.reserve(n_clusters);
+    bits_S_shared.reserve(n_clusters);
 
     for (long r = 0; r < n_trials; ++r) {
         long ct = 0, cs = 0, sh = 0, mm = 0;
+        bits_T_shared.clear();
+        bits_S_shared.clear();
         for (std::size_t k = 0; k < n_clusters; ++k) {
             double sum_T = 0.0, sum_S = 0.0;
             for (std::size_t j = 0; j < cluster; ++j) {
@@ -939,6 +972,8 @@ void handle_post_stress_test(const ServerConfig& cfg,
             if (conf_S) ++cs;
             if (conf_T && conf_S) {
                 ++sh;
+                bits_T_shared.push_back(bit_T);
+                bits_S_shared.push_back(bit_S);
                 if (bit_T != bit_S) ++mm;
             }
         }
@@ -949,6 +984,16 @@ void handle_post_stress_test(const ServerConfig& cfg,
         if (mm == 0) ++perfect;
         total_mismatches  += mm;
         total_shared_bits += sh;
+
+        // real sha-256 hash exchange both parties hash their shared bits and compare digests
+        // экспериментально hash_dropped должен совпасть с (n_trials - perfect)
+        const std::string hT = ssns::protocol::hex_key(bits_T_shared);
+        const std::string hS = ssns::protocol::hex_key(bits_S_shared);
+        if (hT != hS) {
+            ++hash_dropped;
+        } else if (bits_T_shared != bits_S_shared) {
+            ++hash_silent_fail;
+        }
     }
 
     std::vector<double> shared_dbl(n_shared.begin(), n_shared.end());
@@ -972,6 +1017,9 @@ void handle_post_stress_test(const ServerConfig& cfg,
         {"perfect_trials",    perfect},
         {"total_mismatches",  total_mismatches},
         {"total_shared_bits", total_shared_bits},
+        {"hash_dropped",      hash_dropped},
+        {"hash_accepted",     n_trials - hash_dropped},
+        {"hash_silent_fail",  hash_silent_fail},
         {"histogram_shared",  hist},
         {"seed",              seed_opt.has_value()
                               ? json(*seed_opt)

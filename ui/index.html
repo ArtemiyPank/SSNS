@@ -89,6 +89,18 @@
                     <input type="range"  id="bimodality_alpha"     name="bimodality_alpha"     min="0" max="2" step="0.05" value="0">
                     <input type="number" id="bimodality_alpha_num" class="param-num"           min="0" max="5" step="0.05" value="0">
                 </div>
+                <div class="param">
+                    <label for="teacher_seed">teacher_seed <span class="hint">fixed RNG for Teacher weights</span></label>
+                    <input type="number" id="teacher_seed" name="teacher_seed" class="param-num" min="0" step="1" value="42">
+                </div>
+                <div class="param">
+                    <label for="bfa_seed">bfa_seed <span class="hint">fixed RNG for B_FA matrix</span></label>
+                    <input type="number" id="bfa_seed" name="bfa_seed" class="param-num" min="0" step="1" value="43">
+                </div>
+                <div class="param param-derived">
+                    <label>seed control</label>
+                    <button type="button" id="randomize-seeds-btn" class="secondary" title="Pick fresh random teacher_seed and bfa_seed">Randomize seeds</button>
+                </div>
             </div>
         </fieldset>
 
@@ -271,7 +283,7 @@
         <form id="stress-form" class="stress-form">
             <label class="stress-input">
                 <span class="stress-input-label">Trials</span>
-                <input type="number" id="stress-n" value="200" min="1" max="1000000" step="1">
+                <input type="number" id="stress-n" value="200" min="1" step="1">
             </label>
             <label class="stress-input" title="RNG seed for the N(0,1) trial inputs. Same seed = identical X across runs (deterministic for a fixed trained network); different seed = different random samples (sampling noise on match-rate). Does NOT affect the trained network - only the test inputs.">
                 <span class="stress-input-label">Seed</span>

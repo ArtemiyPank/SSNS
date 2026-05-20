@@ -76,6 +76,9 @@ const els = {
     stopBtn:          $("stop-btn"),
     presetFheConservativeBtn: $("preset-fhe-conservative-btn"),
     presetFheBalancedBtn:     $("preset-fhe-balanced-btn"),
+    randomizeSeedsBtn:        $("randomize-seeds-btn"),
+    teacherSeedInput:         $("teacher_seed"),
+    bfaSeedInput:             $("bfa_seed"),
     runProgress:      $("run-progress"),
     runStatus:        $("run-status"),
     configForm:   $("config-form"),
@@ -262,6 +265,7 @@ function bindControls() {
     els.stopBtn.addEventListener("click", onStop);
     els.presetFheConservativeBtn.addEventListener("click", applyFhePresetConservative);
     els.presetFheBalancedBtn.addEventListener("click", applyFhePresetBalanced);
+    els.randomizeSeedsBtn.addEventListener("click", onRandomizeSeeds);
     els.epochSlider.addEventListener("input", onEpochChange);
     els.batchSelect.addEventListener("change", onBatchChange);
     els.showWeights.addEventListener("change", onShowWeightsChange);
@@ -376,7 +380,30 @@ function readConfig() {
         bimodality_alpha:    parseFloat(paramVal("bimodality_alpha")) || 0,
         simulate_fhe_noise:  parseFloat(els.configForm.elements.simulate_fhe_noise.value) || 0,
         key_confirmation:    !!els.configForm.elements.key_confirmation?.checked,
+        teacher_seed:        readSeed("teacher_seed", 42),
+        bfa_seed:            readSeed("bfa_seed",     43),
     };
+}
+
+// parse seed input as non-negative integer, default to fallback if blank or invalid
+// js Number is 53-bit safe so accept values up to 2^53-1 plenty for uint64 seeds in practice
+function readSeed(id, fallback) {
+    const el = document.getElementById(id);
+    if (!el) return fallback;
+    const raw = (el.value ?? "").trim();
+    if (raw === "") return fallback;
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n < 0) return fallback;
+    return Math.floor(n);
+}
+
+// pick fresh random pair pair of seeds and write them into the form fields
+// keep values within 2^53-1 so json roundtrip stays exact
+function onRandomizeSeeds() {
+    const MAX = Number.MAX_SAFE_INTEGER;
+    const pick = () => Math.floor(Math.random() * MAX);
+    if (els.teacherSeedInput) els.teacherSeedInput.value = String(pick());
+    if (els.bfaSeedInput)     els.bfaSeedInput.value     = String(pick());
 }
 
 async function onRun(e) {
@@ -1000,8 +1027,8 @@ async function onStressRun(e) {
     const n = parseInt(els.stressN.value, 10);
     const seedRaw = els.stressSeed.value.trim();
     const seed = seedRaw === "" ? null : parseInt(seedRaw, 10);
-    if (!Number.isFinite(n) || n < 1 || n > 10000) {
-        flagError(els.stressStatus, "n_trials must be in [1, 10000]");
+    if (!Number.isFinite(n) || n < 1) {
+        flagError(els.stressStatus, "n_trials must be >= 1");
         return;
     }
     els.stressRun.disabled = true;
@@ -1012,11 +1039,13 @@ async function onStressRun(e) {
         const resp = await postStressTest(n, seed);
         const dt = ((performance.now() - t0) / 1000).toFixed(2);
         els.stressStatus.classList.add("ok");
+        const pmr = postConfirmMatchRate(resp);
         els.stressStatus.textContent =
             `Done in ${dt}s. ` +
-            `${resp.perfect_trials}/${resp.n_trials} trials matched ` +
-            `(${resp.match_rate_pct.toFixed(2)}%), ` +
-            `${resp.total_mismatches} total mismatches across ` +
+            `Post-confirm match rate ${pmr.toFixed(2)}%: ` +
+            `${resp.hash_accepted}/${resp.n_trials} trials accepted, ` +
+            `${resp.hash_dropped} filtered by hash. ` +
+            `Raw bit-level: ${resp.total_mismatches} mismatches across ` +
             `${resp.total_shared_bits} shared bits.`;
         renderStressResult(resp);
     } catch (err) {
@@ -1029,17 +1058,27 @@ async function onStressRun(e) {
     }
 }
 
+// match rate AFTER sha-256 confirmation: among accepted trials how many are truly equal
+// silent_fail should be 0 in practice sha-256 collision is 2^-128
+// returns 100 when no trials accepted edge case empty input
+function postConfirmMatchRate(r) {
+    if (r.hash_accepted <= 0) return 100;
+    return 100 * (r.hash_accepted - r.hash_silent_fail) / r.hash_accepted;
+}
+
 function renderStressResult(r) {
     const fmt2 = (x) => Number.isFinite(x) ? x.toFixed(2) : "-";
     const total = r.total_clusters;
+    const dropPct = 100 * r.hash_dropped / r.n_trials;
+    const pmr = postConfirmMatchRate(r);
     const summary = `
         <div class="stress-summary-grid">
-            <div class="metric ${r.match_rate_pct >= 99.999 ? 'match' : 'amber'}">
-                <span class="metric-label">Match Rate</span>
-                <span class="metric-value mono">${r.match_rate_pct.toFixed(2)}%</span>
+            <div class="metric ${pmr >= 99.999 ? 'match' : 'amber'}">
+                <span class="metric-label">Match Rate (post-confirm)</span>
+                <span class="metric-value mono">${pmr.toFixed(2)}%</span>
             </div>
             <div class="metric ${r.total_mismatches === 0 ? 'match' : 'amber'}">
-                <span class="metric-label">Mismatches (sum)</span>
+                <span class="metric-label">Raw bit mismatches (sum)</span>
                 <span class="metric-value mono">${r.total_mismatches}</span>
             </div>
             <div class="metric">
@@ -1047,6 +1086,12 @@ function renderStressResult(r) {
                 <span class="metric-value mono">${r.total_shared_bits}</span>
             </div>
         </div>
+        <p class="stress-hash-line mono">
+            <strong>SHA-256 confirmation:</strong>
+            ${r.hash_dropped}/${r.n_trials} trials filtered by hash exchange
+            (${dropPct.toFixed(2)}%),
+            ${r.hash_silent_fail} silent failures.
+        </p>
     `;
     const tableHTML = `
         <table>
@@ -1090,7 +1135,7 @@ function renderStressResult(r) {
                     <td>${fmt2(100 * r.shared.mean / total)}%</td>
                 </tr>
                 <tr>
-                    <td class="row-name">mismatches</td>
+                    <td class="row-name">raw_mismatches</td>
                     <td>${fmt2(r.mismatches.mean)}</td>
                     <td>${fmt2(r.mismatches.std)}</td>
                     <td>${r.mismatches.min}</td>
@@ -1104,6 +1149,8 @@ function renderStressResult(r) {
             Per-trial counts over ${r.n_trials} N(0,1) inputs, evaluated at
             epoch ${r.epoch_used}. "of total" shows what fraction of the
             ${total} clusters survived dead-zone (dz=${r.dead_zone}) filtering on average.
+            Match Rate is computed AFTER SHA-256 confirmation (trials filtered by hash
+            are excluded from the denominator); raw_mismatches are pre-confirm bit-level.
         </p>`;
     els.stressResult.innerHTML = summary + tableHTML;
     drawHistogram(r.histogram_shared, r.shared.mean, total);

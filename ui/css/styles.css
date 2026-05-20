@@ -677,6 +677,13 @@ body.show-weights .layer-block.weight-block { display: block; }
 .stress-summary-grid .metric { background: var(--bg); }
 .stress-summary-grid .metric.match  { border-color: var(--good); }
 .stress-summary-grid .metric.amber  { border-color: var(--warn); }
+.stress-hash-line {
+    margin: 0 0 10px;
+    padding: 6px 10px;
+    border-left: 2px solid var(--accent, #5b9eff);
+    background: var(--bg);
+    font-size: 12px;
+}
 .stress-result table {
     width: 100%;
     border-collapse: collapse;
