@@ -32,8 +32,7 @@ private:
 
 // he init var = 2/fan_in для relu иначе половина сигнала
 // returns rows x cols matrix from N(0, sqrt(2/fan_in))
-[[nodiscard]] linalg::Matrix he_init(std::size_t rows, std::size_t cols,
-                                     std::size_t fan_in, Rng& rng);
+[[nodiscard]] linalg::Matrix he_init(std::size_t rows, std::size_t cols, std::size_t fan_in, Rng& rng);
 
 }  // namespace ssns::nn
 

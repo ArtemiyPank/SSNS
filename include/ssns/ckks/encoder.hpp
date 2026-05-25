@@ -26,45 +26,42 @@
 #include <vector>
 
 namespace ssns::ckks {
+    class Encoder {
+    public:
+        // builds the encoder
+        // pre computes fft twiddles and zeta^k twist tables
+        Encoder();
 
-class Encoder {
-public:
-    // builds the encoder
-    // pre computes fft twiddles and zeta^k twist tables
-    Encoder();
+        // encode slot vector of length POLY_DEGREE/2 into a polynomial
+        // throws if z.size() != POLY_DEGREE/2
+        Polynomial encode(const std::vector<std::complex<double> > &z, double scale) const;
 
-    // encode slot vector of length POLY_DEGREE/2 into a polynomial
-    // throws if z.size() != POLY_DEGREE/2
-    Polynomial encode(const std::vector<std::complex<double>>& z, double scale) const;
+        // decode polynomial back into slots
+        // lifts each rns coef to signed int via garner crt divides by scale runs special fft
+        //
+        // level controls how many rns primes participate in the lift
+        // defaults to NUM_PRIMES
+        // after rescale active level shrinks pass that smaller level so dropped residues do not perturb the lift
+        // 1 <= level <= NUM_PRIMES
+        std::vector<std::complex<double> > decode(const Polynomial &p, double scale,
+                                                  std::size_t level = NUM_PRIMES) const;
 
-    // decode polynomial back into slots
-    // lifts each rns coef to signed int via garner crt divides by scale runs special fft
-    //
-    // level controls how many rns primes participate in the lift
-    // defaults to NUM_PRIMES
-    // after rescale active level shrinks pass that smaller level so dropped residues do not perturb the lift
-    // 1 <= level <= NUM_PRIMES
-    std::vector<std::complex<double>> decode(const Polynomial& p,
-                                             double scale,
-                                             std::size_t level = NUM_PRIMES) const;
+    private:
+        // radix 2 fft in place
+        // inverse=true divides by N at the end
+        void fft(std::vector<std::complex<double> > &a, bool inverse) const;
 
-private:
-    // radix 2 fft in place
-    // inverse=true divides by N at the end
-    void fft(std::vector<std::complex<double>>& a, bool inverse) const;
+        // bit reversal permutation used by both directions
+        void bitreverse_permute(std::vector<std::complex<double> > &a) const;
 
-    // bit reversal permutation used by both directions
-    void bitreverse_permute(std::vector<std::complex<double>>& a) const;
+        // pre computed twist factors
+        // zeta_pow_[k] = zeta^k where zeta = exp(pi*i/N)
+        // decode uses the conjugate
+        std::vector<std::complex<double> > zeta_pow_;
+        std::vector<std::complex<double> > zeta_pow_conj_;
 
-    // pre computed twist factors
-    // zeta_pow_[k] = zeta^k where zeta = exp(pi*i/N)
-    // decode uses the conjugate
-    std::vector<std::complex<double>> zeta_pow_;
-    std::vector<std::complex<double>> zeta_pow_conj_;
-
-    // pre computed fft twiddles
-    std::vector<std::complex<double>> twiddle_fwd_;
-    std::vector<std::complex<double>> twiddle_inv_;
-};
-
-}  // namespace ssns::ckks
+        // pre computed fft twiddles
+        std::vector<std::complex<double> > twiddle_fwd_;
+        std::vector<std::complex<double> > twiddle_inv_;
+    };
+} // namespace ssns::ckks

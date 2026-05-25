@@ -20,18 +20,15 @@
 #include <cstddef>
 
 namespace ssns::ckks {
+    struct Plaintext {
+        Polynomial poly; // ntt form
+        double scale; // encoder scale
+        std::size_t level; // active rns primes
 
-struct Plaintext {
-    Polynomial poly;     // ntt form
-    double scale;        // encoder scale
-    std::size_t level;   // active rns primes
-
-    // wrap a coef form polynomial into a Plaintext
-    // applies forward ntt per prime captures scale tags level (default NUM_PRIMES)
-    static Plaintext from_polynomial(Polynomial coeff_form,
-                                     double scale,
-                                     const std::array<NTT, NUM_PRIMES>& ntts,
-                                     std::size_t level = NUM_PRIMES);
-};
-
-}  // namespace ssns::ckks
+        // wrap a coef form polynomial into a Plaintext
+        // applies forward ntt per prime captures scale tags level (default NUM_PRIMES)
+        static Plaintext from_polynomial(Polynomial coeff_form, double scale,
+                                         const std::array<NTT, NUM_PRIMES> &ntts,
+                                         std::size_t level = NUM_PRIMES);
+    };
+} // namespace ssns::ckks

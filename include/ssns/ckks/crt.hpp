@@ -21,27 +21,25 @@
 #include <cstdint>
 
 namespace ssns::ckks {
+    // 256 bit unsigned little endian limbs
+    // holds the lifted coefficient before centering
+    struct U256 {
+        std::uint64_t lo{0}, mid_lo{0}, mid_hi{0}, hi{0};
+    };
 
-// 256 bit unsigned little endian limbs
-// holds the lifted coefficient before centering
-struct U256 {
-    std::uint64_t lo{0}, mid_lo{0}, mid_hi{0}, hi{0};
-};
+    // lift residues into x in [0, Q)
+    U256 crt_lift(const std::array<std::uint64_t, NUM_PRIMES> &r);
 
-// lift residues into x in [0, Q)
-U256 crt_lift(const std::array<std::uint64_t, NUM_PRIMES>& r);
+    // level aware lift only first `level` primes participate
+    // reconstructed value lives in [0, Q_level)
+    // residues above level are ignored
+    // 1 <= level <= NUM_PRIMES
+    U256 crt_lift(const std::array<std::uint64_t, NUM_PRIMES> &r, std::size_t level);
 
-// level aware lift only first `level` primes participate
-// reconstructed value lives in [0, Q_level)
-// residues above level are ignored
-// 1 <= level <= NUM_PRIMES
-U256 crt_lift(const std::array<std::uint64_t, NUM_PRIMES>& r, std::size_t level);
+    // center around 0 mod Q return signed double
+    // if x > Q/2 then value is x - Q
+    double crt_center_to_double(const U256 &x);
 
-// center around 0 mod Q return signed double
-// if x > Q/2 then value is x - Q
-double crt_center_to_double(const U256& x);
-
-// level aware centering x lives in [0, Q_level)
-double crt_center_to_double(const U256& x, std::size_t level);
-
-}  // namespace ssns::ckks
+    // level aware centering x lives in [0, Q_level)
+    double crt_center_to_double(const U256 &x, std::size_t level);
+} // namespace ssns::ckks

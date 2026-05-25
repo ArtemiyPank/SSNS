@@ -80,8 +80,7 @@ void to_ntt_form(Polynomial& p, const std::array<NTT, NUM_PRIMES>& ntts) {
 }  // namespace
 
 // encrypt pt under pk with fresh randomness from rng
-Ciphertext encrypt(const Plaintext& pt,
-                   const PublicKey& pk,
+Ciphertext encrypt(const Plaintext& pt, const PublicKey& pk,
                    const std::array<NTT, NUM_PRIMES>& ntts,
                    std::mt19937_64& rng) {
     // 1 sample v (sparse ternary) and e0 e1 (gaussian sigma=3.2) coef form lift to rns convert to ntt

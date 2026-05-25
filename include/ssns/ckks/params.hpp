@@ -72,6 +72,7 @@ constexpr std::array<std::uint64_t, NUM_PRIMES> COEFF_MODULI = {
 // bit size of each prime kept in lockstep with COEFF_MODULI
 constexpr std::array<int, NUM_PRIMES> COEFF_MOD_BIT_SIZES = {60, 40, 40, 60};
 
+// Pseudo-Mersenne Constant
 // pseudo mersenne offsets q_i = 2^K_i - PSM_C[i]
 // all four primes are 2^K minus a small constant (< 2^21)
 // enables fast modular reduction via mul_mod_psm{40,60}
