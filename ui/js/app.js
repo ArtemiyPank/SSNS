@@ -1027,8 +1027,8 @@ async function onStressRun(e) {
     const n = parseInt(els.stressN.value, 10);
     const seedRaw = els.stressSeed.value.trim();
     const seed = seedRaw === "" ? null : parseInt(seedRaw, 10);
-    if (!Number.isFinite(n) || n < 1) {
-        flagError(els.stressStatus, "n_trials must be >= 1");
+    if (!Number.isFinite(n) || n < 1 || n > 200000) {
+        flagError(els.stressStatus, "n_trials out of range [1, 200000]");
         return;
     }
     els.stressRun.disabled = true;

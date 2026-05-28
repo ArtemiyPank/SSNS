@@ -283,7 +283,7 @@
         <form id="stress-form" class="stress-form">
             <label class="stress-input">
                 <span class="stress-input-label">Trials</span>
-                <input type="number" id="stress-n" value="200" min="1" step="1">
+                <input type="number" id="stress-n" value="200" min="1" max="200000" step="1">
             </label>
             <label class="stress-input" title="RNG seed for the N(0,1) trial inputs. Same seed = identical X across runs (deterministic for a fixed trained network); different seed = different random samples (sampling noise on match-rate). Does NOT affect the trained network - only the test inputs.">
                 <span class="stress-input-label">Seed</span>

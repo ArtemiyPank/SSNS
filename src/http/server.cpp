@@ -927,8 +927,8 @@ pid_t spawn_detached(const std::vector<std::string>&) {
                 }
                 n_trials = body["n_trials"].get<long>();
             }
-            if (n_trials < 1) {
-                send_error(res, 422, "n_trials must be >= 1");
+            if (n_trials < 1 || n_trials > 200000) {
+                send_error(res, 422, "n_trials out of range [1, 200000]");
                 return;
             }
             if (body.contains("seed") && !body["seed"].is_null()) {
