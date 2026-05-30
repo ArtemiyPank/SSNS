@@ -33,4 +33,4 @@ ui_data/
 *.log
 
 # Excluded from version control (kept on disk only)
-docs/
+yg-docs/
